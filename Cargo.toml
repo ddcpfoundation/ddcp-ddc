@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["program"]
+
+# The Solana tools the deployed binary is built with. solana-verify reads this
+# line to choose its Docker image; without it the tool falls back to the
+# solana-program version in Cargo.lock, a different toolchain.
+[workspace.metadata.cli]
+solana = "3.1.10"
+
+[profile.release]
+overflow-checks = true
+lto = "fat"
+codegen-units = 1

@@ -1,0 +1,6 @@
+# Host toolchain pin (unit tests, clippy, fmt). The on-chain binary is built by
+# cargo build-sbf's bundled platform-tools (v1.52, solana-cargo-build-sbf 3.1.10) —
+# record both here for dependency hygiene.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]

@@ -1,0 +1,50 @@
+# --- Rust / Solana program build artifacts ---
+/target
+**/*.rs.bk
+*.so
+# Cargo.lock is intentionally NOT ignored — dependency hygiene
+# requires lockfiles committed.
+
+# --- Node / TypeScript CLI build artifacts ---
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+# package-lock.json / yarn.lock intentionally NOT ignored — same lockfile requirement.
+
+# --- Solana local test validator / Anchor tooling ---
+test-ledger/
+.anchor/
+
+# --- Transient admin-tx lifecycle artifacts (partially/fully-signed txs; never committed) ---
+admin-tx-*.json
+
+# --- Keypairs and other secret material — never commit these, not even devnet placeholders ---
+*keypair*.json
+# Belt-and-suspenders over *keypair*.json: every JSON key file in the secrets dir
+keys/*.json
+**/id.json
+*.pem
+.env
+.env.*
+elgamal*.json
+# Location, not filename: nothing under keys/ is ever committed, whatever it is called
+keys/
+
+# --- OS / editor cruft ---
+.DS_Store
+.vscode/
+.idea/
+
+# NOTE: this repo intentionally does NOT blanket-ignore *.log — evidence artifacts
+# (devnet run logs, benchmark output) are deliverables, not build noise. Only
+# npm/yarn's own debug logs are excluded above.
+
+# Rust build artifacts (nested helper crates, e.g. scripts/decode_mint_metadata)
+**/target/
+
+# Python bytecode cache
+__pycache__/
+*.pyc

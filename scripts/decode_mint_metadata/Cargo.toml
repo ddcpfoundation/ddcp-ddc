@@ -1,0 +1,18 @@
+# THROWAWAY inspection tool (2026-07-15 devnet genesis readback) — not part of
+# the build. Library-decodes a dumped mint account's MetadataPointer +
+# TokenMetadata via spl-token-2022-interface's own unpacker. Versions match the
+# program's exact pins so the decode uses the identical library build.
+[package]
+name = "decode-mint-metadata"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+solana-program = "=4.0.0"
+spl-token-2022-interface = "=3.1.1"
+spl-token-metadata-interface = "=1.0.1"
+
+# Standalone on purpose: keep this out of the repo-root workspace.
+[workspace]

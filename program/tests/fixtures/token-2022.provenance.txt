@@ -1,0 +1,9 @@
+# Provenance record for program/tests/fixtures/token_2022.so (gitignored blob).
+# Written by scripts/fetch-fixture-programs.sh — do not edit by hand.
+# The test harness verifies the .so's SHA-256 against this record before
+# loading it into LiteSVM; no binary is committed to the repository.
+program_address=TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb
+cluster_url=https://api.devnet.solana.com
+dump_date_utc=2026-10-08T09:09:22Z
+slot_at_fetch=508766665
+sha256=b781b71d230a9910de4d3c103e72608f597fc73c83ee207242ac82b708382a6a

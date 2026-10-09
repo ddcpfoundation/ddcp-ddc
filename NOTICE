@@ -1,0 +1,62 @@
+DDCP reference implementation
+Copyright 2026 DDCP Foundation Inc
+
+This repository contains third-party source code and depends on third-party
+packages. The notices below cover both.
+
+This file is not a statement about the licensing of this repository, and
+neither is LICENSE-Apache-2.0. That file is a copy of the license of the
+vendored code described immediately below, and of nothing else. The license
+of this repository is in LICENSE.
+
+VENDORED SOURCE
+---------------
+cli/src/vendor/confidentialTransferArithmetic.ts
+
+  Copied from:
+    package   @solana-program/token-2022, version 0.15.0
+    path      src/confidentialTransferArithmetic.ts
+    project   https://github.com/solana-program/token-2022
+    commit    74b48bf67f6ebc541a7589a9a44e05dd11fea7d4
+
+  Licensed under the Apache License, Version 2.0. A copy of that license, as
+  published by the upstream project at the commit named above, is at
+  LICENSE-Apache-2.0 in this repository. The upstream npm package ships no
+  copy of the license and no NOTICE file of its own, so the copy here is
+  supplied so that recipients of this repository receive one.
+
+  MODIFICATION. The file is modified in exactly one respect: a 15-line
+  attribution header has been prepended to it. Nothing else has been added,
+  removed, reformatted or re-encoded. The 118 lines that follow the header
+  are byte-identical to the upstream file and hash to
+  3d1baace3f564f9d3927fd15ada99c9b43f635bb6caacb856201e3c46319affa.
+
+  cli/src/confidential-arithmetic-oracle.test.ts asserts the header verbatim
+  and re-derives that body hash on every test run, so a drift in either half
+  fails the suite by name rather than sitting undetected in this file.
+
+  RETIREMENT. Upstream's own text states that this file exists only because
+  the WebAssembly SDK does not yet expose ElGamal ciphertext arithmetic, and
+  that it is to be deleted once the SDK does. The copy here is deleted rather
+  than maintained when that happens.
+
+THIRD-PARTY DEPENDENCIES
+------------------------
+The packages this project depends on are declared in cli/package.json and
+resolved, with the license each package declares for itself, in
+cli/package-lock.json. That lockfile is the record; no summary of it is
+repeated here, because a summary kept by hand goes stale without saying so.
+
+One package is worth naming because its record is incomplete at its source:
+
+  @solana/zk-sdk, version 0.5.1, declares no "license" field in its top-level
+  package.json. It does ship an Apache License 2.0 text at its package root
+  (201 lines, sha256
+  c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4), and its
+  dist/node/package.json declares "Apache-2.0".
+
+  That text is not byte-identical to LICENSE-Apache-2.0 in this repository.
+  The two are different renderings of the same license, differing in whether
+  the "APPENDIX: How to apply the Apache License to your work" section is
+  included. Both are correct as published by their projects and neither
+  should be edited to match the other.
