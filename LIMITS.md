@@ -23,6 +23,8 @@ The Foundation examines this record in its own evaluation of the reference imple
 - **Depends on.**
   - The Token-2022 program and its upgrade key. At the reading of 2026-10-08, its upgrade authority on mainnet-beta was `AeLmXCbPaQHGWRLr2saFsEVfmMNuKnxRAbWCT9P5twgz`. The address has no private key; only a program that derives it can sign for it. The chain records the address, not who controls it.
   - An open upstream proposal for a confidential permanent delegate would require holders to share their secret keys, and cannot reach a holder who refuses.
+  - The holder of Token-2022's upgrade authority. At the reading of 2026-10-13 (UTC), the upgrade authority on mainnet-beta, `AeLmXCbPaQHGWRLr2saFsEVfmMNuKnxRAbWCT9P5twgz`, was the signing address of a Squads v3 multisig account, `BnD53519LK7QM4ERBGvLedZDe1VoTPgtiBkGPWAACiMZ`, with a threshold of four of six signers. The Squads v3 program has no upgrade authority and cannot be changed; the multisig record carries no time delay, so an upgrade takes effect as soon as four signers approve it. The six member addresses are on chain; who controls them is not.
+  - The ZK ElGamal Proof program, `ZkE1Gama1Proof11111111111111111111111111111`, which verifies the proofs that every confidential balance and transfer depends on. Whoever can upgrade or disable that program bounds every confidential criterion in this file. It was disabled twice in 2025 for security fixes (Solana Foundation post-mortems of 2025-05-02 and 2025-06-25; no exploit is known), and Token-2022's confidential transfer instructions were disabled with it. While it is disabled, every operation that needs a proof stops: activating Confidential Balances, confidential transfers and unshielding (see 4). It was accepting proofs at the reading of 2026-10-12 (UTC).
 
 ## 2. Unconditionality
 
@@ -56,7 +58,7 @@ The Foundation examines this record in its own evaluation of the reference imple
 - **Depends on.**
   - The Confidential Balances suite of Solana Token Extensions, via the Token-2022 program.
   - Solana's zero-knowledge proof program and the client libraries that build proofs.
-    - The program has been disabled in the past for security fixes.
+    - Its upgrade and disablement history is in section 1.
     - While it is disabled, turning on Confidential Balances, confidential transfers and unshielding stop.
     - Shielding, applying pending credits and public transfers continue (see 15).
   - The RPC endpoint the holder chooses, which sees the network address of each request and the accounts queried and signed for. With a proxy, the proxy sees the address and the endpoint sees the proxy's.
