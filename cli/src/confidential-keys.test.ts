@@ -23,21 +23,20 @@ import assert from "node:assert/strict";
 import {
   generateKeyPairSigner,
   getAddressEncoder,
-  type Address,
   type MessagePartialSigner,
 } from "@solana/kit";
 import {
-  deriveAeKeyForOwnerMint,
-  deriveElGamalKeypairForOwnerMint,
+  deriveAeKey,
+  deriveElGamalKeypair,
 } from "@solana-program/token-2022/confidential";
 import { DDC_MINT } from "./constants.js";
 import {
   confidentialKeyMessage,
-  confidentialKeySeed,
   deriveConfidentialKeys,
 } from "./confidential-keys.js";
 
 const DOMAIN_TAG = "solana-conf-bal/v1";
+const DOMAIN_TAG_HEX = "736f6c616e612d636f6e662d62616c2f7631";
 
 /**
  * Wraps a signer and counts signMessages calls. Used to assert the rule —
@@ -59,55 +58,52 @@ function countingSigner(inner: MessagePartialSigner): {
   return { signer, calls: () => calls };
 }
 
-test("seed is owner bytes followed by mint bytes, 64 bytes total", async () => {
-  const signer = await generateKeyPairSigner();
-  const owner: Address = signer.address;
-  const seed = confidentialKeySeed(owner, DDC_MINT);
-  const encoder = getAddressEncoder();
-  const ownerBytes = new Uint8Array(encoder.encode(owner));
-  const mintBytes = new Uint8Array(encoder.encode(DDC_MINT));
-  assert.equal(ownerBytes.length, 32);
-  assert.equal(mintBytes.length, 32);
-  assert.equal(seed.length, 64);
-  assert.deepEqual(seed.subarray(0, 32), ownerBytes);
-  assert.deepEqual(seed.subarray(32, 64), mintBytes);
-});
-
-test("message is the literal domain tag followed by the 64-byte seed", async () => {
-  const signer = await generateKeyPairSigner();
-  const message = confidentialKeyMessage(signer.address, DDC_MINT);
+test("message is exactly the 18 bytes of the domain tag, nothing appended", async () => {
+  const message = confidentialKeyMessage();
   const tagBytes = new TextEncoder().encode(DOMAIN_TAG);
   assert.equal(tagBytes.length, 18);
-  assert.equal(message.length, tagBytes.length + 64);
-  assert.equal(
-    new TextDecoder().decode(message.subarray(0, tagBytes.length)),
-    DOMAIN_TAG,
-  );
-  assert.deepEqual(
-    message.subarray(tagBytes.length),
-    confidentialKeySeed(signer.address, DDC_MINT),
-  );
+  assert.equal(message.length, 18);
+  assert.equal(Buffer.from(message).toString("hex"), DOMAIN_TAG_HEX);
+  assert.deepEqual(message, tagBytes);
+});
+
+test("the superseded tag-owner-mint message is not produced, nor requested of the wallet", async () => {
+  const inner = await generateKeyPairSigner();
+  const encoder = getAddressEncoder();
+  const superseded = new Uint8Array([
+    ...new TextEncoder().encode(DOMAIN_TAG),
+    ...encoder.encode(inner.address),
+    ...encoder.encode(DDC_MINT),
+  ]);
+  assert.equal(superseded.length, 18 + 64);
+  assert.notDeepEqual(confidentialKeyMessage(), superseded);
+
+  // What the wallet is actually asked to sign, captured at the signer.
+  const asked: Uint8Array[] = [];
+  const recording: MessagePartialSigner = {
+    address: inner.address,
+    signMessages: async (messages) => {
+      for (const m of messages) asked.push(new Uint8Array(m.content));
+      return await inner.signMessages(messages);
+    },
+  };
+  await deriveConfidentialKeys({ signer: recording });
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0], new TextEncoder().encode(DOMAIN_TAG));
+  assert.notDeepEqual(asked[0], superseded);
 });
 
 test("ORACLE: all three derived byte strings are identical to upstream's", async () => {
   const signer = await generateKeyPairSigner();
-  const owner: Address = signer.address;
 
-  const ours = await deriveConfidentialKeys({ signer, owner, mint: DDC_MINT });
+  const ours = await deriveConfidentialKeys({ signer });
 
-  // Upstream, via the sole permitted /confidential import. Two INDEPENDENT
+  // Upstream, via the sole permitted /confidential import, on its default
+  // path: no publicSeed argument, so the empty seed. Two INDEPENDENT
   // WebAssembly instances are live here (ours /node, upstream's /bundler), so
   // only extracted bytes are compared — never handles.
-  const theirKeypair = await deriveElGamalKeypairForOwnerMint({
-    signer,
-    owner,
-    mint: DDC_MINT,
-  });
-  const theirAeKey = await deriveAeKeyForOwnerMint({
-    signer,
-    owner,
-    mint: DDC_MINT,
-  });
+  const theirKeypair = await deriveElGamalKeypair({ signer });
+  const theirAeKey = await deriveAeKey({ signer });
 
   // Upstream returns the ElGamal public key as an Address (base58); decode it
   // back to bytes rather than encoding ours to a string.
@@ -135,11 +131,7 @@ test("ORACLE: all three derived byte strings are identical to upstream's", async
 test("ONE signature yields BOTH secrets, not one per key", async () => {
   const inner = await generateKeyPairSigner();
   const { signer, calls } = countingSigner(inner);
-  const result = await deriveConfidentialKeys({
-    signer,
-    owner: inner.address,
-    mint: DDC_MINT,
-  });
+  const result = await deriveConfidentialKeys({ signer });
   assert.equal(calls(), 1, "derivation must request exactly one signature");
   assert.ok(result.elgamalPublicKey.length > 0);
   assert.ok(result.elgamalSecretKey.length > 0);
@@ -154,11 +146,7 @@ test("a signer returning no signature is refused, naming the signer", async () =
   };
   await assert.rejects(
     () =>
-      deriveConfidentialKeys({
-        signer: silent,
-        owner: inner.address,
-        mint: DDC_MINT,
-      }),
+      deriveConfidentialKeys({ signer: silent }),
     (err: unknown) => {
       assert.ok(err instanceof Error);
       assert.ok(err.message.includes(inner.address), "must name the signer");

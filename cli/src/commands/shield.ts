@@ -288,8 +288,6 @@ export async function runShield(argv: string[]): Promise<CommandOutcome> {
   // DERIVE — only here is the wallet asked, once.
   const keys = await deriveConfidentialKeys({
     signer,
-    owner: signer.address,
-    mint: config.mint,
   });
   const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
   if (derived !== extension.elgamalPubkey) {

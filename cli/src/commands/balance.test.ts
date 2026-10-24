@@ -13,6 +13,7 @@ import {
   formatCountersLine,
   formatFigure,
   formatForeignNote,
+  formatKeyMismatchOutput,
   formatPendingAlert,
   formatShieldAlert,
   formatStaleWarning,
@@ -20,6 +21,7 @@ import {
   formatUnreadableWarning,
 } from "./balance.js";
 import { PENDING_VALUE_WARNING_BASE_UNITS } from "../confidential-warnings.js";
+import { formatPreSendKeyMismatch } from "../confidential-refusals.js";
 
 const OWNER = address("Hjvkst46pFJtMnw8APk58i3z2rMmMekLiNQLC93S7rax");
 const ATA = address("3q84mCciN6dXksJymBVHKJqmpZYSM3BTZVysWGGK1bdm");
@@ -145,4 +147,29 @@ test("formatThresholdWarnings: value then counter when both fire; an unreadable 
   assert.equal(unreadable.length, 1);
   assert.match(unreadable[0]!, /COUNTER IS FILLING/);
   assert.deepEqual(formatThresholdWarnings({ pending: { readable: false, reason: "x" }, pendingBalanceCreditCounter: 0n, maximumPendingBalanceCreditCounter: cap }), []);
+});
+
+test("formatKeyMismatchOutput: the block shows the public figure alone and carries no refusal, and the refusal is the unchanged mismatch message", () => {
+  const onChainKey = address("Bn36ThBHETRi1qBGSauPmocKRFfzFGvdvnAn7SAb1Jp");
+  const derivedKey = address("9RTSRMFRCLKHLEzyKcTEypz5R45tPUctNMLir98y1iRa");
+  const out = formatKeyMismatchOutput({
+    tokenAccount: ATA,
+    owner: OWNER,
+    publicBaseUnits: 8366797978n,
+    onChainKey,
+    derivedKey,
+  });
+  // Exactly the block the unconfigured branch prints: the public line only.
+  assert.equal(out.block, formatBalanceBlock(ATA, OWNER, { public: "8366.797978 DDC" }));
+  assert.match(out.block, /○ public {1,}: 8366\.797978 DDC/);
+  assert.doesNotMatch(out.block, /◎|●|pending|confidential/);
+  assert.doesNotMatch(out.block, /KEY MISMATCH/);
+  // The refusal is the shared message, untouched, and prints no figure of its own.
+  assert.equal(out.refusal, formatPreSendKeyMismatch({ onChainKey, derivedKey }));
+  assert.match(out.refusal, /^KEY MISMATCH — /);
+  assert.match(out.refusal, /Its public balance is unaffected/);
+  assert.doesNotMatch(out.refusal, /8366/);
+  // Zero public balance still prints the line, never omits it.
+  const zero = formatKeyMismatchOutput({ tokenAccount: ATA, owner: OWNER, publicBaseUnits: 0n, onChainKey, derivedKey });
+  assert.match(zero.block, /○ public {1,}: 0\.000000 DDC/);
 });

@@ -194,6 +194,31 @@ export function formatThresholdWarnings(input: {
   return out;
 }
 
+/**
+ * The configured-and-mine KEY MISMATCH: the refusal message names the public
+ * balance as unaffected, so the BALANCE block with the public line only
+ * (as the unconfigured branch prints it) is printed first and the unchanged
+ * refusal follows. Pure, so the composition is pinned in balance.test.ts
+ * without a network read.
+ */
+export function formatKeyMismatchOutput(input: {
+  tokenAccount: Address;
+  owner: Address;
+  publicBaseUnits: bigint;
+  onChainKey: Address;
+  derivedKey: Address;
+}): { block: string; refusal: string } {
+  return {
+    block: formatBalanceBlock(input.tokenAccount, input.owner, {
+      public: `${formatDdcAmount(input.publicBaseUnits)} DDC`,
+    }),
+    refusal: formatPreSendKeyMismatch({
+      onChainKey: input.onChainKey,
+      derivedKey: input.derivedKey,
+    }),
+  };
+}
+
 export async function runBalance(argv: string[]): Promise<void> {
   const config = resolveConfig(argv);
 
@@ -277,17 +302,18 @@ export async function runBalance(argv: string[]): Promise<void> {
   // CONFIGURED AND MINE — derive late, once; compare before decrypting.
   const keys = await deriveConfidentialKeys({
     signer,
-    owner: signer.address,
-    mint: config.mint,
   });
   const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
   if (derived !== extension.elgamalPubkey) {
-    throw new Error(
-      formatPreSendKeyMismatch({
-        onChainKey: extension.elgamalPubkey,
-        derivedKey: derived,
-      }),
-    );
+    const mismatch = formatKeyMismatchOutput({
+      tokenAccount,
+      owner,
+      publicBaseUnits,
+      onChainKey: extension.elgamalPubkey,
+      derivedKey: derived,
+    });
+    console.log(mismatch.block);
+    throw new Error(mismatch.refusal);
   }
 
   const confidential = decryptDecryptableBalance(

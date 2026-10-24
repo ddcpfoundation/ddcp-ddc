@@ -2,7 +2,7 @@
 
 This file is the reference implementation's Known Limits against DDCP: for each of the fifteen [DDCP conformance criteria](https://github.com/ddcpfoundation/protocol-governance/blob/criteria-v20261008-2/CRITERIA.md), what this program and command-line tool deliver, how, and where they fall short. It describes the code in this repository as it would run in a deployment that carries value. It describes neither the protocol nor DDCP Foundation Inc. The Foundation's own deployment, on devnet, is described in the [README](README.md#the-deployed-reference-instance). A currency built using this code publishes its own Known Limits against DDCP. This file is versioned with the code; cite it by commit.
 
-**As of:** `v0.1.0`, 2026-10-09 (UTC).
+**As of:** `v0.2.0`, 2026-10-24 (UTC).
 
 Each section has up to three parts:
 
@@ -42,7 +42,7 @@ The Foundation examines this record in its own evaluation of the reference imple
 
 ## 4. Privacy: balance and amount
 
-- **Delivered.** A holder can turn on Confidential Balances with `setup-privacy`, which asks first; it is strongly recommended on first use and never turned on silently. That holder then has an encrypted balance, and the amount of each confidential transfer is encrypted. The keys for it are derived from the wallet's signing key and can be regenerated from it.
+- **Delivered.** A holder can turn on Confidential Balances with `setup-privacy`, which asks first; it is strongly recommended on first use and never turned on silently. That holder then has an encrypted balance, and the amount of each confidential transfer is encrypted. The keys for it are derived from one signature by the wallet's key over a fixed message, the wallet-level derivation that Solana's client libraries call the standard one, so they can be regenerated from the wallet key and are the same on every mint that uses the standard ([docs/SPECIFICATION.md](docs/SPECIFICATION.md), section 12).
 - **Limits.**
   - **Opt-in only.** It covers only holders who turn it on. The public balance and its history are fully visible, so value that passes through a public balance carries a traceable history.
   - **Shield and unshield amounts.** Amounts moved into and out of the confidential balance (`shield`, `unshield`) are visible.
@@ -51,7 +51,8 @@ The Foundation examines this record in its own evaluation of the reference imple
     - Whoever holds that key and knows the rate can narrow the amount of any transfer whose fee is below the absolute ceiling. The band is 10,000 divided by the rate, in base units: at 100 basis points, within 100 base units, or 0.0001 of a unit at six decimals.
     - A transfer whose fee reaches the ceiling shows only that it is at or above that size.
     - At a zero fee schedule, which the genesis sets, nothing is revealed this way (see 11).
-  - **Wallet derivation.** Only wallet software that derives the keys the same way can read a confidential balance; a wallet that derives differently will not show it (see 15).
+  - **One signature, every mint.** The signed message names no mint, so the two keys are the same for every mint that uses the standard. Whoever obtains that signature, or the keys made from it, from a holder can read every confidential balance the wallet holds on every such mint, not only this currency's. `setup-privacy` states this before asking.
+  - **Wallet derivation.** Only wallet software that derives the keys the standard way can read a confidential balance; a wallet that derives differently will not show it (see 15). An account whose keys were derived another way, among them an account set up by version 0.1.0 of this tool, is refused by this version: `balance` shows its public figure and no confidential one, and no confidential command sends from it. Its confidential balance stays readable only to software that derives the way it was set up.
   - **Size limits.**
     - One confidential transfer or shield carries at most 2^48 − 1 base units (281,474,976.710655 units at six decimals); larger amounts go in parts.
     - An account accepts at most 65,536 incoming confidential transfers before its holder runs `apply-pending`; the tool warns as the count nears the limit.
@@ -61,6 +62,7 @@ The Foundation examines this record in its own evaluation of the reference imple
     - Its upgrade and disablement history is in section 1.
     - While it is disabled, turning on Confidential Balances, confidential transfers and unshielding stop.
     - Shielding, applying pending credits and public transfers continue (see 15).
+  - The key derivation convention of Solana's client libraries, which those libraries can change. A later change would leave balances derived this way readable only to software that keeps this derivation, as this version does for no earlier one.
   - The RPC endpoint the holder chooses, which sees the network address of each request and the accounts queried and signed for. With a proxy, the proxy sees the address and the endpoint sees the proxy's.
 
 ## 5. Privacy: sender and receiver
@@ -171,10 +173,16 @@ The Foundation examines this record in its own evaluation of the reference imple
 - **Limits.**
   - **SOL for fees and rent.** Holders need SOL for network fees and for account rent, paid by whoever signs. A fee-payer relay is not built; when built, it will cover network fees only, and rent remains the holder's.
   - **Confidential transfer mechanics.**
-    - A confidential transfer needs the network's newer transaction format.
+    - A confidential transfer is 3,247 bytes on the wire and needs the network's version-1 transaction format; the tool refuses to send on a cluster where that format is not active.
     - It takes longer to prepare, because the proofs are built on the sender's machine.
     - The recipient's account must have Confidential Balances turned on, which makes it larger and holds more rent than a public account.
     - The recipient runs `apply-pending`, a transaction of its own, before the amount can be spent.
-  - **Wallet portability.** Portability of a confidential balance between wallets depends on wallet software using the same key derivation as the Token-2022 client libraries. A test in the tool (`cli/src/confidential-keys.test.ts`) checks that this tool's derivation is byte-identical to theirs at the version it pins. Wallet compatibility has not been measured.
+    - `confidential-transfer`, `unshield` and `public-transfer` ask for a typed `CONFIRM`; `shield` and `apply-pending` send once their checks pass, without a prompt.
+  - **Wallet portability.**
+    - A confidential balance is readable by any wallet software that derives the keys the standard way ([docs/SPECIFICATION.md](docs/SPECIFICATION.md), section 12). A test in the tool (`cli/src/confidential-keys.test.ts`) checks that this tool's derivation is byte-identical to the Token-2022 client library's seedless derivation at the version it pins.
+    - On 2026-10-21, on devnet, a holder account of the reference mint was opened in three wallet applications, as browser extensions: Phantom 26.34.0, Solflare 2.40.1 and Backpack 0.10.218.6. The account had Confidential Balances turned on by version 0.1.0 of this tool, so its keys were derived under that version's derivation, not the standard one. Each wallet showed the token and its public balance and sent a public transfer; Backpack showed the token only after its rule that hides tokens valued under one cent was overridden. None showed a confidential or pending balance, or that one existed, and none offered a confidential operation. With the public balance at zero and a pending confidential balance of 2 DDC, the token disappeared from all three displays, Backpack's override included; after `unshield` through this tool, all three showed the funds again. A holder whose balance is entirely confidential sees no token in these wallets. What these wallets show for an account whose keys were derived the standard way was not measured.
+    - Beyond those three, wallet compatibility was checked at the desk on 2026-10-23, from published sources, not by measurement. The standard is carried by Solana's client libraries: the Rust and WebAssembly `zk-sdk`, and `@solana-program/token-2022` from version 0.18.0 (2026-09-16), which derives the same bytes as the seedless derivation of the version this tool pins. No self-custody wallet application was found that reads or sends confidential balances with it, or with any other derivation.
+    - Those libraries ask wallet applications to offer the derivation as a dedicated step and to refuse an ordinary message-signing request that begins with the tag. An application cannot obtain the derivation signature from such a wallet through ordinary message signing. This tool does not connect to a wallet application; it signs only with key files.
+    - A hardware signing device signs; it does not build the proofs a confidential transfer needs, so it cannot by itself send one, whatever it derives.
   - **Proof program.** Confidential operations stop while the proof program is disabled (see 4).
 - **Depends on.** The host chain's fee and rent rules; wallet developers; the proof program and its client libraries.

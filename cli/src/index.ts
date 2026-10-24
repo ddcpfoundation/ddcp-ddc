@@ -33,7 +33,7 @@ import { formatSendFailure, readSendFailure } from "./send-failure.js";
 import { broadcastRecord } from "./tx/broadcast.js";
 import { formatUnrecognizedFailure, type CommandOutcome } from "./exit-status.js";
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.2.0";
 
 export function banner(): string {
   return `ddc ${VERSION}`;

@@ -2,7 +2,7 @@
 
 This report states what the program's and the command-line tool's test suites cover, and what they do not cover, with the reason for each gap. It is written for an independent security reviewer.
 
-The program and command-line figures were measured on 2026-10-08, by running the suites and listing their tests. Every figure can be measured again with the commands in section 1. The tests are checks that the code behaves as described. They are not an audit.
+The program figures were measured on 2026-10-08 and the command-line figures on 2026-10-24, by running the suites and listing their tests. Every figure can be measured again with the commands in section 1. The tests are checks that the code behaves as described. They are not an audit.
 
 Contents:
 
@@ -89,15 +89,15 @@ Each of the two runs of section 1, against the mainnet-beta build and against th
 
 **Repeated names.** Test names repeat across binaries, for example `issuer_not_signer_is_missing_required_signature` in three suites. Each binary runs separately, so a repeated name is not a conflict. Of the 308 names, 285 are distinct. Counts in this report are therefore per binary, never by name across the program.
 
-### Command-line tool: 551 tests in 76 files
+### Command-line tool: 552 tests in 76 files
 
 | Area | Files | Tests |
 |---|---:|---:|
-| Commands (`cli/src/commands`) | 14 | 160 |
+| Commands (`cli/src/commands`) | 14 | 161 |
 | Transaction builders and verifiers (`cli/src/tx`) | 21 | 163 |
 | Instruction encoders (`cli/src/instructions`) | 7 | 28 |
 | Everything else (`cli/src`) | 34 | 200 |
-| **Total** | **76** | **551** |
+| **Total** | **76** | **552** |
 
 The figures per file are in section 6.
 
@@ -305,11 +305,11 @@ The set was predicted before the run. The check was run before the co-signer rol
 | | `commands/admin-serialize.test.ts` | 8 | building and displaying the first-signature transaction |
 | | `commands/admin-submit.test.ts` | 12 | inspecting and sending a fully signed transaction |
 | | `commands/apply-pending.test.ts` | 6 | moving a pending confidential balance into the available balance |
-| | `commands/balance.test.ts` | 7 | public and confidential balances |
+| | `commands/balance.test.ts` | 8 | public and confidential balances; an account whose keys were derived another way gets its public figure, then a refusal of the confidential part |
 | | `commands/confidential-transfer.test.ts` | 14 | the confidential transfer command |
 | | `commands/entry-ordering.test.ts` | 26 | a command with missing or invalid arguments shows its usage or names the argument, before any key is read |
 | | `commands/public-transfer.test.ts` | 8 | the public transfer command; it refuses a recipient that is not a wallet |
-| | `commands/setup-privacy.test.ts` | 2 | the consent step before Confidential Balances is turned on |
+| | `commands/setup-privacy.test.ts` | 2 | the consent step before Confidential Balances is turned on; the consent text states that one signature exposes the wallet's confidential balances on every mint using the standard |
 | | `commands/shield.test.ts` | 11 | moving a public balance into the confidential balance |
 | | `commands/unshield.test.ts` | 12 | moving a confidential balance back to the public balance |
 | Transaction builders and verifiers | `tx/admin-verify-dispatch.test.ts` | 8 | which verifier each two-signature instruction uses |
@@ -348,8 +348,8 @@ The set was predicted before the run. The check was run before the co-signer rol
 | | `confidential-arithmetic-oracle.test.ts` | 7 | the vendored ciphertext arithmetic against the upstream library; the vendored file is pinned unaltered |
 | | `confidential-balance-oracle.test.ts` | 3 | decrypted balances and the apply-pending counter against the upstream library |
 | | `confidential-balance.test.ts` | 5 | decrypting balances |
-| | `confidential-keys.test.ts` | 5 | deriving the confidential keys |
-| | `confidential-refusals.test.ts` | 5 | the refusal sentences of confidential operations, including a key mismatch before a send and a read-back mismatch after one |
+| | `confidential-keys.test.ts` | 5 | deriving the confidential keys from one signature over the fixed tag alone, with no address in the message; byte-identical to the Token-2022 client library's seedless derivation at the pinned version |
+| | `confidential-refusals.test.ts` | 5 | the refusal sentences of confidential operations, including an account whose keys were derived another way, a key mismatch before a send and a read-back mismatch after one |
 | | `confidential-warnings.test.ts` | 5 | the warnings shown before Confidential Balances is used |
 | | `config.test.ts` | 21 | the configuration file |
 | | `confirm-prompt.test.ts` | 14 | the typed `CONFIRM` prompt |
@@ -397,7 +397,7 @@ The set was predicted before the run. The check was run before the co-signer rol
    - That the program and Token-2022 accept those transactions on a cluster is shown only by devnet transactions.
 6. **The `state` command has no test of a successful read.** Its decoders are tested one by one (`mint-authorities`, `mint-state`, `mint-transfer-fee`, `program-upgrade-authority`, `reserve-statement`). Its failure paths are tested at the entry point (`network-failure`). A full successful read is checked by hand against devnet.
 7. **No test reaches a public cluster.** Network fees, rent, compute use and the behavior of public endpoints are measured on devnet, outside the suites.
-8. **Wallet compatibility and proof time on mobile devices** are measurements, not tests, and are not part of this report.
+8. **Wallet compatibility and proof time on mobile devices** are measurements, not tests, and are not part of this report. The desk check of wallet compatibility is recorded in `LIMITS.md`, section 15.
 9. **Static analysis** (`cargo audit`, `npm audit`, `cargo clippy` with arithmetic and slicing lints, a Solana static analyzer) is a separate check and is not part of this report.
 10. **`solana-lints` was not run.**
    - Its seven lints (crytic/solana-lints) are pinned to the Rust toolchain `nightly-2025-01-09`. Five crates the program itself is built from declare a minimum Rust version of 1.89 (`solana-address`, `solana-hash`, `solana-instruction-error`, `solana-pubkey`, `solana-system-interface`), later than that toolchain, so the lints cannot compile the program as built.

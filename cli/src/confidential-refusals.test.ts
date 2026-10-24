@@ -22,14 +22,19 @@ const SIG = signature(
   "99eUso3aSbE9tqGSTXzo3TLfKb9RkMTURrHKQ1K7Zh3BbeqPevr5E1iCbpTjqHuTFLtfxTTD5ekfVuZFzQyEQf8",
 );
 
-test("formatPreSendKeyMismatch: names both keys, says nothing was sent, and carries the shield-NOTHING instruction", () => {
+test("formatPreSendKeyMismatch: names both keys and the earlier derivation, says nothing was sent, leaves the public balance alone, claims no loss, and carries the shield-nothing instruction", () => {
   const msg = formatPreSendKeyMismatch({ onChainKey: ON_CHAIN, derivedKey: DERIVED });
   assert.match(msg, /^KEY MISMATCH — /);
   assert.match(msg, new RegExp(ON_CHAIN));
   assert.match(msg, new RegExp(DERIVED));
+  assert.match(msg, /different derivation/);
+  assert.match(msg, /earlier version of this tool \(0\.1\.0\), whose derivation included the account's owner and mint, or another wallet application/);
+  assert.match(msg, /This version cannot read or move this account's confidential balance/);
+  assert.match(msg, /Its public balance is unaffected/);
   assert.match(msg, /nothing was sent/);
-  assert.match(msg, /Shield NOTHING/);
-  assert.match(msg, /cannot be decrypted by this wallet/);
+  assert.match(msg, /use the tool that set the account up/);
+  assert.match(msg, /Shield nothing into this account's confidential balance/);
+  assert.doesNotMatch(msg, /lost|unrecoverable|cannot be recovered/);
 });
 
 test("formatReadBackFailed: cause (stale read), risk (a second send pays a fee), the filled-in check line, and a conditioned re-run", () => {

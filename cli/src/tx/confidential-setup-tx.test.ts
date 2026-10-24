@@ -71,11 +71,7 @@ interface AnyInstruction {
 
 async function assembleForTest() {
   const signer = await generateKeyPairSigner();
-  const keys = await deriveConfidentialKeys({
-    signer,
-    owner: signer.address,
-    mint: DDC_MINT,
-  });
+  const keys = await deriveConfidentialKeys({ signer });
   const result = await assembleConfidentialSetupTransaction({
     signer,
     mint: DDC_MINT,

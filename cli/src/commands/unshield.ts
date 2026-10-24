@@ -232,8 +232,6 @@ export async function runUnshield(
   }
   const keys = await deriveConfidentialKeys({
     signer,
-    owner: signer.address,
-    mint: config.mint,
   });
   const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
   if (derived !== extension.elgamalPubkey) {

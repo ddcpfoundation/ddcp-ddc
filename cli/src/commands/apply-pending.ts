@@ -247,8 +247,6 @@ export async function runApplyPending(argv: string[]): Promise<void> {
   // holder a signature. Only here is the wallet asked, once.
   const keys = await deriveConfidentialKeys({
     signer,
-    owner: signer.address,
-    mint: config.mint,
   });
   const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
   if (derived !== extension.elgamalPubkey) {

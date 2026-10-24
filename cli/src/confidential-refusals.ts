@@ -26,9 +26,11 @@ export function formatPreSendKeyMismatch(input: {
   derivedKey: Address;
 }): string {
   return (
-    `KEY MISMATCH — the on-chain ElGamal public key ${input.onChainKey} is not the key this wallet derives (${input.derivedKey}). ` +
+    `KEY MISMATCH — this account's confidential key (${input.onChainKey}) was set up under a different derivation from the one this version of the tool uses (${input.derivedKey}): an earlier version of this tool (0.1.0), whose derivation included the account's owner and mint, or another wallet application. ` +
+    "This version cannot read or move this account's confidential balance. Its public balance is unaffected. " +
     "The account cannot be reconfigured in place; nothing was sent. " +
-    "Shield NOTHING into this account's confidential balance: amounts placed behind a key this wallet did not derive cannot be decrypted by this wallet."
+    "To recover access to the confidential balance, use the tool that set the account up. " +
+    "Shield nothing into this account's confidential balance in the meantime."
   );
 }
 

@@ -306,7 +306,7 @@ export async function runConfidentialTransfer(argv: string[], deps: Confidential
   if (!state.approved) {
     throw new Error(CONFIDENTIAL_TRANSFER_UNAPPROVED_STOP);
   }
-  const keys = await deriveConfidentialKeys({ signer, owner: signer.address, mint: config.mint });
+  const keys = await deriveConfidentialKeys({ signer });
   const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
   if (derived !== extension.elgamalPubkey) {
     throw new Error(formatPreSendKeyMismatch({ onChainKey: extension.elgamalPubkey, derivedKey: derived }));

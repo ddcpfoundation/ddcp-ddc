@@ -40,6 +40,14 @@ test("formatConsentBlock: carries the two consent grounds and the four instructi
   assert.match(block, /NO separate backup/);
   assert.match(block, /not casually reversible/);
   assert.match(block, /viewing/);
+  // D-196 item 2 consent points: opt-in and recommended; one signature; the
+  // same keys on every token using the standard; the signature is permanent.
+  assert.match(block, /opt-in, and strongly recommended/);
+  assert.match(block, /One wallet signature derives your privacy keys/);
+  assert.match(block, /same keys for every token that uses the Solana\s+standard, not only this one/);
+  assert.match(block, /permanent viewing capability/);
+  assert.match(block, /writes it nowhere/);
+  assert.doesNotMatch(block, /never asks/);
   assert.match(block, /1\. CreateAssociatedTokenIdempotent/);
   assert.match(block, /2\. Reallocate for extension types 5 and 17/);
   assert.match(block, /3\. ConfigureAccount \(pending-credit cap 65536, proof at \+1\)/);

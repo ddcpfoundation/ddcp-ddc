@@ -5,8 +5,9 @@
 // signal. The upstream-recipe watch (confidential-keys.test.ts) runs against THIS file.
 //
 // THE RECIPE, in words, so the watch can be run without reading upstream:
-//   1. public seed = owner pubkey bytes (32) || mint pubkey bytes (32)
-//   2. message     = b"solana-conf-bal/v1" || public seed
+//   1. public seed = empty
+//   2. message     = b"solana-conf-bal/v1" alone: 18 bytes, hex
+//                    736f6c616e612d636f6e662d62616c2f7631 (D-196 item 2)
 //   3. signature   = the wallet's Ed25519 signature over that message, 64 bytes
 //   4. ONE signature yields BOTH secrets: ConfidentialKeys.fromSignature(sig)
 //      returns one object, and .elgamal() and .ae() come off it. The mixing
@@ -20,10 +21,9 @@
 // ECDSA signing is randomized by specification, so a passkey wallet cannot use
 // this derivation route at all (the SDK ships a separate PRF path for them).
 //
-// The binding is per (owner, mint): stable across token-account close-and-
-// reopen, and no key is reused across mints. This is upstream's convention,
-// not a requirement of the SDK — the SDK's seed is caller-controlled. Matching
-// it IS the interoperability contract.
+// One wallet yields the same keys on every token account and every mint that
+// uses this standard; they are stable across close-and-reopen. This is the
+// Solana standard, and matching it is the interoperability contract.
 //
 // IMPORT NOTE: @solana/zk-sdk publishes NO root export — only /node, /web and
 // /bundler. Production code imports /node. The test-only oracle reaches
@@ -34,13 +34,7 @@
 // No free() call is made on the WASM handles below. That MATCHES upstream,
 // which also does not; it is a deliberate match, not an oversight.
 
-import {
-  createSignableMessage,
-  getAddressEncoder,
-  getTupleEncoder,
-  type Address,
-  type MessagePartialSigner,
-} from "@solana/kit";
+import { createSignableMessage, type MessagePartialSigner } from "@solana/kit";
 import { ConfidentialKeys } from "@solana/zk-sdk/node";
 
 export interface DerivedConfidentialKeys {
@@ -53,27 +47,13 @@ export interface DerivedConfidentialKeys {
 }
 
 /**
- * The public seed: owner bytes followed by mint bytes. Built with the same
- * tuple encoder upstream uses rather than a hand-rolled concatenation, so the
- * byte layout is read from the encoder and is not an inference on our side.
- */
-export function confidentialKeySeed(owner: Address, mint: Address): Uint8Array {
-  const encoder = getTupleEncoder([getAddressEncoder(), getAddressEncoder()]);
-  return new Uint8Array(encoder.encode([owner, mint]));
-}
-
-/**
- * The exact message the wallet is asked to sign. Exposed separately so a
+ * The exact message the wallet is asked to sign: the domain tag alone, from
+ * the SDK's own signerMessage over an empty seed. Exposed separately so a
  * command can show the operator what it is about to be asked to approve, and
  * so the oracle can assert the domain tag directly.
  */
-export function confidentialKeyMessage(
-  owner: Address,
-  mint: Address,
-): Uint8Array {
-  return new Uint8Array(
-    ConfidentialKeys.signerMessage(confidentialKeySeed(owner, mint)),
-  );
+export function confidentialKeyMessage(): Uint8Array {
+  return new Uint8Array(ConfidentialKeys.signerMessage(new Uint8Array(0)));
 }
 
 /**
@@ -84,14 +64,10 @@ export function confidentialKeyMessage(
  */
 export async function deriveConfidentialKeys({
   signer,
-  owner,
-  mint,
 }: {
   signer: MessagePartialSigner;
-  owner: Address;
-  mint: Address;
 }): Promise<DerivedConfidentialKeys> {
-  const message = confidentialKeyMessage(owner, mint);
+  const message = confidentialKeyMessage();
   const [signatures] = await signer.signMessages([
     createSignableMessage(message),
   ]);

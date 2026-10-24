@@ -103,15 +103,21 @@ export function formatConsentBlock(input: ConsentInput): string {
       : "exists, Confidential Balances not yet activated — instruction 1 is a no-op";
   return [
     "CONFIDENTIAL BALANCES — what activation does, and what it does not",
-    "  Your privacy key is derived from your wallet key by a fixed recipe. It needs",
-    "  NO separate backup: it is re-derived from the wallet every time it is used,",
-    "  and cannot be lost on its own; only losing the wallet key itself loses it.",
-    "  Activation writes the PUBLIC half of that key into your DDC token account.",
+    "  Confidential Balances is opt-in, and strongly recommended.",
+    "  One wallet signature derives your privacy keys. They need NO separate backup:",
+    "  they are re-derived from the wallet every time they are used, and cannot be",
+    "  lost on their own; only losing the wallet key itself loses them.",
+    "  The same signature derives the same keys for every token that uses the Solana",
+    "  standard, not only this one. A signature shown to anyone else exposes the",
+    "  confidential balances of this wallet on all such tokens.",
+    "  Activation writes the PUBLIC half of the key into your DDC token account.",
     "  That is not casually reversible: changing the key later means emptying the",
     "  confidential balance and reconfiguring the account.",
-    "  The wallet signature that derives the key is a permanent, unrecorded viewing",
-    "  capability over this account's amounts. This command requests it once, in",
-    "  memory, and writes it nowhere.",
+    "  That signature is a permanent viewing capability: anyone who obtains it can",
+    "  read this wallet's confidential amounts, now and in the future, and the only",
+    "  remedy is moving to a new wallet. This tool derives the keys from it in",
+    "  memory, on each use, and writes it nowhere. Sign this message only in",
+    "  software you would trust with your balances.",
     "WILL SEND, self-pay, one transaction",
     `  cluster        : ${input.cluster}`,
     `  wallet (owner) : ${input.wallet}`,
@@ -196,8 +202,6 @@ export async function runSetupPrivacy(
   if (before.kind === "configured") {
     const keys = await deriveConfidentialKeys({
       signer,
-      owner: signer.address,
-      mint: config.mint,
     });
     const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
     console.log(
@@ -241,8 +245,6 @@ export async function runSetupPrivacy(
   // DERIVE — only after consent: ONE wallet signature.
   const keys = await deriveConfidentialKeys({
     signer,
-    owner: signer.address,
-    mint: config.mint,
   });
   const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
 
