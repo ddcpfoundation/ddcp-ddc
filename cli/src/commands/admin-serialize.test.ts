@@ -14,13 +14,17 @@ import { buildUpdateTransferFeeInstruction } from "../instructions/update-transf
 import { parseAdminTxEnvelope, serializeAdminTxEnvelope } from "../tx/envelope.js";
 import { assertRoleAuthority } from "../role-guard.js";
 import type { MintState } from "../mint-state.js";
+import { buildRotateSignerInstruction } from "../instructions/rotate-signer.js";
 import {
   baseUnitsToDdc,
   buildBurnClaim,
+  buildRotateSignerClaim,
   buildUpdateFeeClaim,
   formatBurnSerializeDecode,
+  formatRotateSignerSerializeDecode,
   formatSerializeDecode,
   formatUpdateFeeSerializeDecode,
+  rotateNextSigner,
 } from "./admin-serialize.js";
 
 // Offline: only the PURE formatters and helpers are tested here — the live
@@ -328,4 +332,60 @@ test("update-fee role guard: a non-operator signer is refused before signing (as
       err.message.includes(notOperator.address) &&
       err.message.includes(SOURCE),
   );
+});
+
+test("formatRotateSignerSerializeDecode renders the five I-8 accounts, the incoming key's slot AWAITING, and who signs next", async () => {
+  const operator = await generateKeyPairSigner(); // initiator
+  const incoming = await generateKeyPairSigner(); // the key installed
+  const assembled = await assembleDurableNonceTransaction(
+    buildRotateSignerInstruction({
+      mint: MINT,
+      mintState: MINT_STATE,
+      operatorAuthority: operator.address,
+      reserveAuthority: RESERVE,
+      role: 2,
+      newPubkey: incoming.address,
+    }),
+    {
+      nonceAccount: OPERATOR_NONCE,
+      nonceAuthority: operator.address,
+      nonceValue: NONCE_VALUE,
+    },
+    operator,
+  );
+  const out = formatRotateSignerSerializeDecode({
+    rpcUrl: "https://api.devnet.solana.com",
+    mint: MINT,
+    programId: address("Bn36ThBHETRi1qBGSauPmocKRFfzFGvdvnAn7SAb1Jp"),
+    sources: { rpcUrl: "default", mint: "default", program: "default" },
+    mintStatePda: MINT_STATE,
+    role: "operator",
+    signerAddress: operator.address,
+    onChainOperator: operator.address,
+    reserveAuthority: RESERVE,
+    nonceAccount: OPERATOR_NONCE,
+    nonceValue: NONCE_VALUE,
+    assembled,
+    outPath: "./admin-tx-rotate-test.json",
+  });
+  assert.ok(out.includes(`target-role 2 (Reserve) -> new signer ${incoming.address}`));
+  assert.ok(out.includes(`  account 4 new_authority: ${incoming.address} (readonly-signer)`));
+  assert.match(out, new RegExp(`signature operator ${operator.address}: FILLED`));
+  assert.match(out, new RegExp(`signature reserve ${RESERVE}: AWAITING`));
+  assert.match(out, new RegExp(`signature incoming ${incoming.address}: AWAITING`));
+  assert.ok(
+    out.includes(
+      `next           : the incoming key ${incoming.address} signs with admin countersign --incoming, then the Reserve countersigns`,
+    ),
+  );
+});
+
+test("rotateNextSigner and buildRotateSignerClaim: a new key of its own awaits the incoming step; a current co-signer key awaits the Reserve", () => {
+  const OPERATOR = address("CKJDfZ5VBVTNaY4XUuqDn8umDujHKEBWNE3qosQeVzqe");
+  assert.match(rotateNextSigner(DESTINATION, OPERATOR, RESERVE), /admin countersign --incoming/);
+  assert.match(rotateNextSigner(RESERVE, OPERATOR, RESERVE), /covers its slot/);
+  assert.match(rotateNextSigner(OPERATOR, OPERATOR, RESERVE), /covers its slot/);
+  assert.equal(buildRotateSignerClaim(2, DESTINATION, OPERATOR, RESERVE).awaitingSignature, "incoming");
+  assert.equal(buildRotateSignerClaim(2, RESERVE, OPERATOR, RESERVE).awaitingSignature, "reserve");
+  assert.equal(buildRotateSignerClaim(1, OPERATOR, OPERATOR, RESERVE).awaitingSignature, "reserve");
 });

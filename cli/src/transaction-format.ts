@@ -19,7 +19,7 @@
 // function beneath it.
 
 import { address, fetchEncodedAccount, type Address, type Commitment } from "@solana/kit";
-import { SYSTEM_PROGRAM } from "./constants.js";
+import { SYSTEM_PROGRAM } from "./program-addresses.js";
 import type { SolanaRpc } from "./rpc.js";
 
 /** Feature gate `txv1aq4pp…` (SIMD-0385, the version-1 transaction format). */

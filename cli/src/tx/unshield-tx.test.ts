@@ -20,6 +20,7 @@
 // priority fee is absent.
 
 import { test } from "node:test";
+import { DDC_DECIMALS } from "../amount.js";
 import assert from "node:assert/strict";
 import { generateKeyPairSigner, getTransactionEncoder } from "@solana/kit";
 import { AeKey, ElGamalKeypair } from "@solana/zk-sdk/node";
@@ -115,6 +116,7 @@ async function assembleOne() {
   const result = await assembleUnshieldTransaction({
     signer,
     mint: DDC_MINT,
+    decimals: DDC_DECIMALS,
     amountBaseUnits: AMOUNT,
     newDecryptableAvailableBalance,
     equalityProof: proofs.equalityProof,

@@ -54,6 +54,21 @@ export function issuerFrame(ctx: CountersignContext): SignerFrame {
   };
 }
 
+/**
+ * A third signer some instructions carry besides the frame's two: I-8's
+ * incoming key, which must sign the replacement that installs it (D-210). Its
+ * address comes from the wire (the key the instruction stores), never from
+ * PDA-1, so it is checked here only as a signature slot; the descriptor's
+ * rebuild pins the same key as the instruction's account. `state` is the
+ * state the slot must be in at this step. A key equal to the frame's
+ * initiator or countersigner has no slot of its own and is not checked here.
+ */
+export interface IncomingSigner {
+  readonly address: Address;
+  readonly label: string;
+  readonly state: "unsigned" | "signed";
+}
+
 export type AdminVerifyFailure = {
   readonly ok: false;
   readonly reason: string;
@@ -101,7 +116,15 @@ export function verifyAdminCountersignCore<TExtracted>(
   stage: VerifyStage,
   frame: SignerFrame,
   descriptor: AdminIx1Descriptor<TExtracted>,
+  incoming?: IncomingSigner,
 ): AdminVerifyCoreVerdict<TExtracted> {
+  const incomingSlot =
+    incoming !== undefined &&
+    incoming.address !== frame.initiator &&
+    incoming.address !== frame.countersigner
+      ? incoming
+      : undefined;
+  const expectedSlots = incomingSlot === undefined ? 2 : 3;
   // a. exactly 2 instructions
   if (decoded.instructions.length !== 2) {
     return {
@@ -110,14 +133,15 @@ export function verifyAdminCountersignCore<TExtracted>(
     };
   }
 
-  // b. exactly 2 signature slots; fee-payer slot signed and == the frame
-  //    initiator; the frame countersigner slot present and in the stage's
-  //    required state (countersign: NOT signed; submit: signed); no stray
-  //    slot signed.
-  if (decoded.signatures.length !== 2) {
+  // b. exactly 2 signature slots (3 with an incoming signer of its own);
+  //    fee-payer slot signed and == the frame initiator; the frame
+  //    countersigner slot present and in the stage's required state
+  //    (countersign: NOT signed; submit: signed); the incoming slot, if any,
+  //    present and in its required state; no stray slot signed.
+  if (decoded.signatures.length !== expectedSlots) {
     return {
       ok: false,
-      reason: `expected exactly 2 signature slots, got ${decoded.signatures.length}`,
+      reason: `expected exactly ${expectedSlots} signature slots, got ${decoded.signatures.length}`,
     };
   }
   const feePayerSlot = decoded.signatures[0];
@@ -157,10 +181,32 @@ export function verifyAdminCountersignCore<TExtracted>(
       reason: `${frame.countersignerLabel} slot ${frame.countersigner} is not signed — the envelope is not countersigned`,
     };
   }
+  if (incomingSlot !== undefined) {
+    const slot = decoded.signatures.find((s) => s.address === incomingSlot.address);
+    if (slot === undefined) {
+      return {
+        ok: false,
+        reason: `no signature slot for the ${incomingSlot.label} ${incomingSlot.address}`,
+      };
+    }
+    if (incomingSlot.state === "unsigned" && slot.signed) {
+      return {
+        ok: false,
+        reason: `${incomingSlot.label} slot ${incomingSlot.address} is already signed`,
+      };
+    }
+    if (incomingSlot.state === "signed" && !slot.signed) {
+      return {
+        ok: false,
+        reason: `${incomingSlot.label} slot ${incomingSlot.address} is not signed — the key being installed signs before the ${frame.countersignerLabel} (admin countersign --incoming)`,
+      };
+    }
+  }
   const straySigned = decoded.signatures.find(
     (s) =>
       s.address !== frame.initiator &&
       s.address !== frame.countersigner &&
+      s.address !== incomingSlot?.address &&
       s.signed,
   );
   if (straySigned !== undefined) {

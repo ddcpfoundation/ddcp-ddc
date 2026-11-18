@@ -94,12 +94,15 @@ test("pending and shield alerts: alert-plus-offer, a proper singular and plural,
 });
 
 test("stale and unreadable warnings: cause, risk and action, honest about non-repair and never claiming zero", () => {
-  const stale = formatStaleWarning(1n, 2n);
-  assert.match(stale, /UNDERSTATE/);
+  const stale = formatStaleWarning({ kind: "short", missingBaseUnits: 1n }, 1n, 2n);
+  assert.match(stale, /UNDERSTATES the true balance by 0\.000001 DDC/);
   assert.match(stale, /expected counter 1, actual 2/);
-  assert.match(stale, /Cause: a past apply raced an incoming credit/);
-  assert.match(stale, /NOT recoverable by re-applying/);
-  assert.match(stale, /lower bound/);
+  assert.match(stale, /raced by a credit, or two ran at the same time/);
+  assert.match(stale, /Action: run ddc apply-pending\. It corrects the copy, even with nothing pending\.$/);
+  const past = formatStaleWarning({ kind: "unreadable" }, 1n, 1n);
+  assert.match(past, /by more than this tool can read/);
+  assert.match(past, /transaction history/);
+  assert.doesNotMatch(past, /apply-pending/);
   const unreadable = formatUnreadableWarning("pending", "wrong key");
   assert.match(unreadable, /pending figure is UNREADABLE/);
   assert.match(unreadable, /\(wrong key\)/);

@@ -95,6 +95,11 @@ export interface UpdateFeeVerifyDeps {
  */
 export interface RotateSignerVerifyDeps {
   readonly operatorFrame: SignerFrame;
+  /**
+   * True at the incoming key's own step (`admin countersign --incoming`): its
+   * slot must then be unsigned; otherwise it must already be signed (D-210).
+   */
+  readonly incomingStep?: boolean;
 }
 
 export type AdminVerifyResultWithoutBurnOrUpdateFee = Exclude<
@@ -236,6 +241,7 @@ export function dispatchAdminVerify(
       ctx,
       rotateSignerDeps.operatorFrame,
       stage,
+      rotateSignerDeps.incomingStep === true,
     );
     if (!verdict.ok) return verdict;
     return {

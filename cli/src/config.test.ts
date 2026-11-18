@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  displayRpcUrl,
   formatTargetBlock,
   requireSigningIdentity,
   requireStatedCluster,
@@ -220,7 +221,7 @@ test("formatTargetBlock reports the source of each value, not just the value", (
   ]);
   const block = formatTargetBlock(overridden);
   // The cluster was stated on the command line; mint and program were not.
-  assert.match(block, /TARGET cluster : https:\/\/example\.invalid\/rpc \(flag\)/);
+  assert.match(block, /TARGET cluster : https:\/\/example\.invalid\/\.\.\. \(flag\)/);
   assert.match(block, /TARGET mint    : .* \(default\)/);
   assert.match(block, /TARGET program : .* \(default\)/);
 });
@@ -270,4 +271,34 @@ test("requireStatedCluster names the caller's action in the refusal and never --
   // A stated cluster passes with an action exactly as it does without one.
   const stated = resolveConfig(["--config", missingConfig, "--rpc-url", "https://example.invalid/rpc"]);
   assert.doesNotThrow(() => requireStatedCluster(stated, "setup-privacy"));
+});
+
+// RPC ADDRESS NEVER PRINTED WHOLE (D-208 item 7).
+// Providers carry access keys in the path, the query or the user-name part.
+
+test("displayRpcUrl: a bare address is printed as it is, the default unchanged", () => {
+  assert.equal(displayRpcUrl("https://api.devnet.solana.com"), "https://api.devnet.solana.com");
+  assert.equal(displayRpcUrl("https://api.devnet.solana.com/"), "https://api.devnet.solana.com");
+  assert.equal(displayRpcUrl("http://127.0.0.1:8899"), "http://127.0.0.1:8899");
+});
+
+test("displayRpcUrl: a key in the query, the path or the user part is never printed", () => {
+  for (const raw of [
+    "https://rpc.invalid/?api-key=PLACEHOLDERKEY",
+    "https://rpc.invalid/PLACEHOLDERKEY/",
+    "https://user:PLACEHOLDERKEY@rpc.invalid",
+    "https://rpc.invalid#PLACEHOLDERKEY",
+  ]) {
+    const shown = displayRpcUrl(raw);
+    assert.equal(shown, "https://rpc.invalid/...");
+    assert.ok(!shown.includes("PLACEHOLDERKEY"));
+  }
+  assert.equal(displayRpcUrl("not a url PLACEHOLDERKEY"), "(an RPC address that is not a URL; not shown)");
+});
+
+test("the target block and the resolved config print the RPC address without its key, and keep it whole for network access", () => {
+  const cfg = resolveConfig(["--config", missingConfig, "--rpc-url", "https://rpc.invalid/?api-key=PLACEHOLDERKEY"]);
+  assert.equal(cfg.rpcUrl, "https://rpc.invalid/?api-key=PLACEHOLDERKEY");
+  assert.equal(cfg.rpcDisplay, "https://rpc.invalid/...");
+  assert.ok(!formatTargetBlock(cfg).includes("PLACEHOLDERKEY"));
 });

@@ -3,7 +3,8 @@
 This repository is the reference implementation of the Decentralized Digital Currency Protocol (DDCP), published by DDCP Foundation Inc. It runs on Solana's Token-2022 program and contains:
 
 - an on-chain program (`program/`) that governs a Token-2022 mint: minting with two signatures, burning from a redemption-collection account, an issuance pause, a reserve statement published by the reserve key, transfer-fee changes bounded by ceilings fixed at genesis, and rotation of the program's co-signers;
-- a command-line tool, `ddc` (`cli/`), for holders and for the people who operate a currency built with it.
+- a command-line tool, `ddc` (`cli/`), for holders and for the people who operate a currency built with it;
+- a holder client library in `cli/src/holder/`, on which the tool's holder commands are built (see [Holder client library](#holder-client-library)).
 
 What the program does, instruction by instruction, is specified in [docs/SPECIFICATION.md](docs/SPECIFICATION.md).
 
@@ -33,11 +34,11 @@ Devnet only, as a demonstration of the published code. The Foundation deploys th
 | | Devnet address |
 |---|---|
 | Program | `Bn36ThBHETRi1qBGSauPmocKRFfzFGvdvnAn7SAb1Jp` |
-| Program upgrade authority | Deploy key `8J6DmzQ8ZFLpAgnELpqtRmbL9ve6AB3nmGhxAG7bcWvR`, separate from every holder key and test key. The demonstration stays upgradeable under it so that it follows the published code. The arrangement a currency gives its own deployment is in [docs/UPGRADE_PROCEDURE.md](docs/UPGRADE_PROCEDURE.md). |
+| Program upgrade authority | A deploy key, separate from every holder key and test key. The demonstration stays upgradeable under it so that it follows the published code. The arrangement a currency gives its own deployment is in [docs/UPGRADE_PROCEDURE.md](docs/UPGRADE_PROCEDURE.md). |
 | Reference mint | `9RTSRMFRCLKHLEzyKcTEypz5R45tPUctNMLir98y1iRa`. Token metadata: name `ddc`, symbol `DDC`, link `https://ddcp.dev/metadata/ddc-devnet.json`. <!-- rename-currency: keep --> |
 | Reserve statement | `7yJKCjUP93pH5THrCvte6CjVCcATWDnPg1UDdokiMXVP`, published by the reserve key. The figure reads 0 (no reserve is held). Its document is `https://ddcp.dev/reserve/ddc-devnet.txt`, whose SHA-256 the statement's link carries; a readable page is at `https://ddcp.dev/reserve/ddc-devnet`. <!-- rename-currency: keep --> |
 
-`ddc state` prints these addresses, every authority listed below and the public half of the withheld-fee decryption key, live from the chain.
+`ddc state` prints these addresses, every authority listed below and the public half of the withheld-fee decryption key, live from the chain. An authority whose holder can change is named in this README by its role, not by an address; `ddc state` prints the address that holds it.
 
 Before the current reference mint, this program created two test mints on devnet; both are retired and carry no value.
 
@@ -59,13 +60,13 @@ Creating a mint with this program does not by itself make it conforming; whether
 | Freeze Authority | None. |
 | Confidential Transfer mint authority | None. |
 | Transfer fee configuration authority | The program's fee account `48y5dnb9g3FhZJKtvVzMV9qRUd8Jz7aYeXvsmNtBVEJu`, directed by the issuer and the operator signing together. |
-| Withdraw-withheld authority | `J5aokYFjfeyWsXAzdXQGfQoUrx5Xc4WDc6BCVjyeopAQ`, a key held by the issuer, separate from its co-signer key. |
-| Confidential Transfer fee authority | `CxVb4kZeyyzDfJqTAQVuhHomAb5JoAkH74eZdrCDZhzW`, a second key held by the issuer, separate from its co-signer key. |
+| Withdraw-withheld authority | A key held by the issuer, separate from its co-signer key. |
+| Confidential Transfer fee authority | A second key held by the issuer, separate from its co-signer key. |
 | Withheld-fee decryption key | ElGamal public key `dvHT4Aldldboa/o8o0RZLCo09MLXx2UlOwPTZFcNCkM=`, fixed at genesis; its secret is held by the issuer. |
-| Metadata pointer authority | `4QVtXiCKrhnPjHJenhPic25MKz5gvHSz6cfegpeh9oUe`, a key held by the issuer. |
-| Metadata update authority | `BKBuFZExXGBH12Kt2vHxLduuKPGQZy1yL3E9rKfZPEKv`, a second key held by the issuer. |
-| Co-signers in the program's record | Issuer `5AygggFgzsTFFbuQNYsxWoLRyJYpPwSzTWq3ZHdZStPV`, operator `BHbcbfSXvxU2toUw5R6YEqWNcCb6PpYaLd1QdoCPyUSU`, reserve `8Zff6SFUwZnS54qt2JiWodWQ2Hhrg25j3sWko6UzWUSx`: three distinct keys. |
-| Program upgrade authority | The deploy key `8J6DmzQ8ZFLpAgnELpqtRmbL9ve6AB3nmGhxAG7bcWvR`. |
+| Metadata pointer authority | A key held by the issuer. |
+| Metadata update authority | A second key held by the issuer. |
+| Co-signers in the program's record | Issuer, operator and reserve: three distinct keys. |
+| Program upgrade authority | The deploy key. |
 
 On this devnet instance a single keyholder holds every key in this table. The issuer, operator and reserve keys are three distinct keys, not three independent holders. The deploy key is a single key, which is one reason the demonstration carries no value and no currency is created on it. Because the reference mint carries no value, a key lost on it would be addressed by a new genesis at a new address. A currency built from this repository states in its own specification who holds each of its keys.
 
@@ -130,7 +131,7 @@ Holder commands, each taking `--keypair <path>` and a stated cluster (`--rpc-url
 | `setup-privacy` | Turns on Confidential Balances for your account, after asking. |
 | `shield <amount>` | Moves an amount from your public balance into your confidential balance. |
 | `unshield <amount>` | Moves an amount from your confidential balance to your public balance. |
-| `apply-pending` | Moves confidential credits you have received into your available confidential balance. |
+| `apply-pending` | Moves confidential credits you have received into your available confidential balance. It also corrects the confidential figure when the account's readable copy of the balance is short. |
 | `confidential-transfer <amount> <wallet>` | Sends an amount from your confidential balance. |
 | `public-transfer <amount> <wallet>` | Sends an amount from your public balance. |
 
@@ -142,9 +143,13 @@ How each command confirms:
 
 A command exits with status 0 when it did what it exists to do, and 1 when it stopped short: a refusal, an abort or a decline.
 
-The RPC endpoint you choose sees your network address and the accounts you query and sign for. If you configure a proxy, the proxy sees your network address and the endpoint sees the proxy's.
+The RPC endpoint you choose sees your network address and the accounts you query and sign for. If you configure a proxy, the proxy sees your network address and the endpoint sees the proxy's. The tool prints the endpoint and the proxy as scheme and host only.
 
-The `admin` commands are for the people who operate a currency: two signatures for mint, burn, fee and co-signer changes, prepared, countersigned and submitted as separate steps. `node dist/index.js` with no arguments lists them.
+The `admin` commands are for the people who operate a currency: two signatures for mint, burn and fee changes, and three for a co-signer change (the operator, the reserve and the key being installed), prepared, countersigned and submitted as separate steps. `node dist/index.js` with no arguments lists them.
+
+## Holder client library
+
+The holder client library lives in `cli/src/holder/`. It carries the eight holder operations (state, setup-privacy, balance, apply-pending, shield, unshield, confidential-transfer, public-transfer) with every check the command-line tool applies, and takes from the caller the connection to the network, the mint, the program, the currency's decimals, a signer and a function that sends a signed transaction. It does no printing, prompting, configuration or key loading of its own. It runs under Node only and does not by itself make a browser wallet possible. It is not yet published as a package: the first publication is intended after an independent security audit of the library, under the `@ddcpfoundation` scope, and is announced in the [release notes](RELEASE_NOTES.md).
 
 ## License
 

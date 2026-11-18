@@ -12,6 +12,7 @@
 // shared line states. A signature added to the transaction fails this test
 // rather than letting a shipped sentence quietly become false.
 import { test } from "node:test";
+import { DDC_DECIMALS } from "../amount.js";
 import assert from "node:assert/strict";
 import { generateKeyPairSigner, type Signature } from "@solana/kit";
 import { DDC_MINT } from "../constants.js";
@@ -103,6 +104,7 @@ test("unshield: the shared fee line's one-signature condition is costed from the
     signer,
     blockhash,
     mint: DDC_MINT,
+    decimals: DDC_DECIMALS,
     amountBaseUnits: 250_000n,
     newDecryptableAvailableBalance: new Uint8Array(DECRYPTABLE_BALANCE_BYTES),
     equalityProof: new Uint8Array(EQUALITY_PROOF_BYTES),

@@ -109,7 +109,8 @@ pub struct PublishAttestationArgs {
 }
 
 /// I-8 `rotate_signer` arguments. Validation: `role <= 2` else
-/// `InvalidRole`; `new_pubkey != Pubkey::default()` else `InvalidPubkey`.
+/// `InvalidRole`; `new_pubkey != Pubkey::default()` else `InvalidPubkey`;
+/// `new_pubkey` must sign, as the instruction's fifth account.
 /// Role encoding: 0 = Issuer, 1 = Operator, 2 = Reserve.
 #[derive(BorshSerialize, BorshDeserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RotateSignerArgs {

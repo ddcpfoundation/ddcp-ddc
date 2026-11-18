@@ -5,15 +5,18 @@ import type { AdminTxClaim } from "../tx/envelope.js";
 import {
   assertNoStrayConfirmFlags,
   buildCountersignedClaim,
+  buildIncomingSignedClaim,
   checkBurnConfirmation,
   checkConfirmation,
   checkRotateSignerConfirmation,
   checkUpdateFeeConfirmation,
   countersignedOutPath,
+  decideIncomingSigner,
   formatBurnCountersignDecode,
   formatCountersignDecode,
   formatRotateSignerCountersignDecode,
   formatUpdateFeeCountersignDecode,
+  incomingSignedOutPath,
   requireBurnConfirmFlags,
   requireRotateSignerConfirmFlags,
   requireUpdateFeeConfirmFlags,
@@ -707,6 +710,75 @@ test("formatRotateSignerCountersignDecode: renders the rotation, the CONFIRM MAT
     out.includes(`live operator  : ${OPERATOR} (matched: fee payer + operator slot)`),
   );
   assert.ok(out.includes(`live reserve : ${RESERVE} (countersigner`));
+  assert.ok(out.includes(`incoming key   : ${OTHER} (signed — verified before this countersignature)`));
   assert.ok(out.includes(NONCE_VALUE));
   assert.ok(out.includes("./admin-tx-rotate-first-countersigned.json"));
+});
+
+test("formatRotateSignerCountersignDecode, incoming step: the new key signs now and the Reserve after; a current co-signer key is said to cover its slot", () => {
+  const OPERATOR = address("CKJDfZ5VBVTNaY4XUuqDn8umDujHKEBWNE3qosQeVzqe");
+  const out = formatRotateSignerCountersignDecode({
+    role: 2,
+    newPubkey: OTHER,
+    liveOperator: OPERATOR,
+    liveReserve: RESERVE,
+    nonceValue: NONCE_VALUE,
+    outPath: "./admin-tx-rotate-first-incoming-signed.json",
+    incomingStep: true,
+  });
+  assert.ok(out.includes(`incoming key   : ${OTHER} (signs now — must equal the --keypair signer; the Reserve countersigns after)`));
+  assert.ok(out.includes(`live reserve : ${RESERVE} (countersigner — signs after the incoming key)`));
+  assert.ok(out.includes("incoming-signed : ./admin-tx-rotate-first-incoming-signed.json"));
+  const own = formatRotateSignerCountersignDecode({
+    role: 2,
+    newPubkey: RESERVE,
+    liveOperator: OPERATOR,
+    liveReserve: RESERVE,
+    nonceValue: NONCE_VALUE,
+    outPath: "./x-countersigned.json",
+  });
+  assert.ok(own.includes(`incoming key   : ${RESERVE} (a current co-signer key — its signature covers its slot)`));
+});
+
+test("incomingSignedOutPath and buildIncomingSignedClaim: the incoming step's file sits beside the input, and its claim awaits the Reserve", () => {
+  assert.equal(incomingSignedOutPath("admin-tx-rotate-1.json"), "admin-tx-rotate-1-incoming-signed.json");
+  assert.equal(incomingSignedOutPath("x"), "x-incoming-signed.json");
+  const OPERATOR = address("CKJDfZ5VBVTNaY4XUuqDn8umDujHKEBWNE3qosQeVzqe");
+  const original: AdminTxClaim = {
+    amountDisplay: `rotate role 2 -> ${OTHER}`,
+    amount: "0",
+    destination: OTHER,
+    nonceAccount: "Sd4959ZK3E2hnyt9o2RHLVxe9NX4Z7Z2ZPcWjaNsnMf",
+    feePayer: OPERATOR,
+    initiatorRole: "operator",
+    signedBy: [OPERATOR],
+    awaitingSignature: "incoming",
+  };
+  const updated = buildIncomingSignedClaim(original, OTHER);
+  assert.deepEqual(updated.signedBy, [OPERATOR, OTHER]);
+  assert.equal(updated.awaitingSignature, "reserve");
+  assert.deepEqual(original.signedBy, [OPERATOR]);
+});
+
+test("decideIncomingSigner: passes only for rotate_signer, the stated role equal to the target role, a key of its own, and the loaded key equal to the new key", () => {
+  const OPERATOR = address("CKJDfZ5VBVTNaY4XUuqDn8umDujHKEBWNE3qosQeVzqe");
+  const base = {
+    instruction: "rotate_signer",
+    role: 2,
+    newPubkey: OTHER,
+    statedRole: "reserve" as const,
+    signerAddress: OTHER,
+    liveOperator: OPERATOR,
+    liveReserve: RESERVE,
+  };
+  assert.equal(decideIncomingSigner(base), undefined);
+  assert.match(decideIncomingSigner({ ...base, instruction: "mint_tokens" }) ?? "", /applies only to rotate_signer/);
+  assert.match(decideIncomingSigner({ ...base, role: 5 }) ?? "", /role 5, which does not exist/);
+  assert.match(decideIncomingSigner({ ...base, statedRole: "issuer" }) ?? "", /--role must be "reserve", the role the new key takes/);
+  assert.match(decideIncomingSigner({ ...base, newPubkey: RESERVE, signerAddress: RESERVE }) ?? "", /current co-signer key/);
+  assert.match(decideIncomingSigner({ ...base, newPubkey: OPERATOR, signerAddress: OPERATOR }) ?? "", /current co-signer key/);
+  const refusal = decideIncomingSigner({ ...base, signerAddress: DESTINATION });
+  assert.ok(refusal !== undefined);
+  assert.ok(refusal.includes(`the loaded key ${DESTINATION} is not the new key ${OTHER}`));
+  assert.equal(decideIncomingSigner({ ...base, role: 0, statedRole: "issuer" }), undefined);
 });

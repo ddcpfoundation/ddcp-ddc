@@ -33,15 +33,7 @@
 // costs one account read.
 import { EXIT_NOT_DONE, type CommandOutcome } from "../exit-status.js";
 import { parseArgs } from "node:util";
-import {
-  assertIsFullySignedTransaction,
-  fetchEncodedAccount,
-  getAddressDecoder,
-  getBase64EncodedWireTransaction,
-  getTransactionEncoder,
-  type Signature,
-} from "@solana/kit";
-import { decodeToken, findAssociatedTokenPda } from "@solana-program/token-2022";
+import { getTransactionEncoder, type Signature } from "@solana/kit";
 import {
   formatTargetBlock,
   requireStatedCluster,
@@ -51,32 +43,19 @@ import {
 } from "../config.js";
 import { createRpc } from "../rpc.js";
 import { loadSignerFromFile } from "../signer.js";
-import { deriveConfidentialKeys } from "../confidential-keys.js";
-import {
-  formatPreSendKeyMismatch,
-  formatUnreadableRefusal,
-} from "../confidential-refusals.js";
-import {
-  readActivationState,
-  readConfidentialTransferAccount,
-} from "../confidential-account.js";
-import {
-  decryptDecryptableBalance,
-  encryptDecryptableBalance,
-} from "../confidential-balance.js";
 import { NETWORK_FEE_LINE } from "../announcements.js";
-import { formatDdcAmount, parseDdcAmount } from "../amount.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
+import { DDC_DECIMALS, formatDdcAmount, parseDdcAmount } from "../amount.js";
 import {
   CONFIRM_ABORTED_BEFORE_SEND,
   promptTypedConfirm,
   TYPED_CONFIRM_QUESTION,
   type ConfirmPrompt,
 } from "../confirm-prompt.js";
-import { requireTransactionFormatActive } from "../transaction-format.js";
-import { buildUnshieldProofs } from "../tx/unshield-proofs.js";
-import { assembleUnshieldTransaction } from "../tx/unshield-tx.js";
+import { formatTransactionFormatRefusal } from "../transaction-format.js";
 import { broadcastAndConfirm } from "../tx/broadcast.js";
+import { prepareUnshield, sendUnshield } from "../holder/unshield.js";
+import type { HolderRefusalReason } from "../holder/refusal.js";
+import { withRefusalText } from "../holder-refusal-text.js";
 
 export const UNSHIELD_USAGE =
   "unshield: usage — unshield <amount> --keypair <path> --rpc-url <url>";
@@ -203,146 +182,73 @@ export async function runUnshield(
   requireStatedCluster(config, UNSHIELD_OPERATION);
   const identity = requireWalletIdentity(config);
   const signer = await loadSignerFromFile(identity.keypairPath);
-  const [tokenAccount] = await findAssociatedTokenPda({
-    owner: signer.address,
-    tokenProgram: TOKEN_2022_PROGRAM,
-    mint: config.mint,
-  });
   const rpc = createRpc(config.rpcUrl);
-  // FORMAT GATE, the first live read: network state, refused by name.
-  await requireTransactionFormatActive({
-    rpc,
-    commitment: config.commitment,
-    cluster: config.rpcUrl,
-    operation: UNSHIELD_OPERATION,
-  });
-  const readToken = async () =>
-    decodeToken(
-      await fetchEncodedAccount(rpc, tokenAccount, { commitment: config.commitment }),
-    );
-  const account = await readToken();
-  const state = readActivationState(account);
-  const extension = readConfidentialTransferAccount(account);
-  if (state.kind !== "configured" || extension === undefined) {
-    console.log(UNSHIELD_UNCONFIGURED_STOP);
-    return EXIT_NOT_DONE;
-  }
-  if (!state.approved) {
-    throw new Error(UNSHIELD_UNAPPROVED_STOP);
-  }
-  const keys = await deriveConfidentialKeys({
-    signer,
-  });
-  const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
-  if (derived !== extension.elgamalPubkey) {
-    throw new Error(
-      formatPreSendKeyMismatch({
-        onChainKey: extension.elgamalPubkey,
-        derivedKey: derived,
-      }),
-    );
-  }
-  const confidential = decryptDecryptableBalance(
-    new Uint8Array(keys.aeKey),
-    new Uint8Array(extension.decryptableAvailableBalance),
-  );
-  if (!confidential.readable) {
-    throw new Error(formatUnreadableRefusal("confidential"));
-  }
-  if (amountBaseUnits > confidential.baseUnits) {
-    throw new Error(
-      formatInsufficientConfidentialRefusal({
+  const ctx = { rpc, commitment: config.commitment, mint: config.mint, decimals: DDC_DECIMALS };
+  return withRefusalText(async () => {
+    const plan = await prepareUnshield(ctx, { signer, amountBaseUnits });
+    if (plan.kind === "not-activated") {
+      console.log(UNSHIELD_UNCONFIGURED_STOP);
+      return EXIT_NOT_DONE;
+    }
+    console.log(
+      formatUnshieldAnnouncement({
         amountBaseUnits,
-        confidentialBaseUnits: confidential.baseUnits,
+        confidentialAfterBaseUnits: plan.confidentialAfterBaseUnits,
+        publicAfterBaseUnits: plan.publicAfterBaseUnits,
+        cluster: config.rpcDisplay,
+        clusterSource: config.source.rpcUrl,
       }),
     );
-  }
-  const availableBalanceCiphertext = new Uint8Array(extension.availableBalance);
-  const proofs = buildUnshieldProofs({
-    elgamalSecretKey: new Uint8Array(keys.elgamalSecretKey),
-    availableBalanceCiphertext,
-    availableBaseUnits: confidential.baseUnits,
-    amountBaseUnits,
-  });
-  const newDecryptableAvailableBalance = encryptDecryptableBalance(
-    new Uint8Array(keys.aeKey),
-    proofs.remainingBaseUnits,
-  );
-  const publicBefore = account.exists ? account.data.amount : 0n;
-  console.log(
-    formatUnshieldAnnouncement({
-      amountBaseUnits,
-      confidentialAfterBaseUnits: proofs.remainingBaseUnits,
-      publicAfterBaseUnits: publicBefore + amountBaseUnits,
-      cluster: config.rpcUrl,
-      clusterSource: config.source.rpcUrl,
-    }),
-  );
-  // CONFIRM: read once, after the announcement, before the
-  // send. Anything but the exact word aborts with nothing sent.
-  if (!(await promptConfirm(TYPED_CONFIRM_QUESTION))) {
-    console.log(CONFIRM_ABORTED_BEFORE_SEND);
-    return EXIT_NOT_DONE;
-  }
-  // RE-READ before the send: byte equality against the ciphertext the proofs
-  // were built over, or the command refuses with its own sentence.
-  const beforeSend = readConfidentialTransferAccount(await readToken());
-  if (
-    beforeSend === undefined ||
-    !sameBytes(new Uint8Array(beforeSend.availableBalance), availableBalanceCiphertext)
-  ) {
-    throw new Error(formatBalanceMovedRefusal());
-  }
-  const blockhash = (await rpc.getLatestBlockhash({ commitment: config.commitment }).send()).value;
-  const { transaction } = await assembleUnshieldTransaction({
-    signer,
-    mint: config.mint,
-    amountBaseUnits,
-    newDecryptableAvailableBalance,
-    equalityProof: proofs.equalityProof,
-    rangeProof: proofs.rangeProof,
-    blockhash,
-  });
-  assertIsFullySignedTransaction(transaction);
-  console.log(`UNSHIELD wire size : ${getTransactionEncoder().encode(transaction).length} bytes`);
-  let signature: Signature;
-  try {
-    signature = await broadcastAndConfirm(
-      rpc,
-      getBase64EncodedWireTransaction(transaction),
-      config.commitment,
-      "UNSHIELD",
+    // CONFIRM: read once, after the announcement, before the send. Anything
+    // but the exact word aborts with nothing sent.
+    if (!(await promptConfirm(TYPED_CONFIRM_QUESTION))) {
+      console.log(CONFIRM_ABORTED_BEFORE_SEND);
+      return EXIT_NOT_DONE;
+    }
+    // THE SEND-TIME CHECK runs first inside sendUnshield: byte equality
+    // against the ciphertext the proofs were built over.
+    const result = await sendUnshield(ctx, plan, {
+      signer,
+      beforeSubmit: (transaction) =>
+        console.log(`UNSHIELD wire size : ${getTransactionEncoder().encode(transaction).length} bytes`),
+      submit: async (wire) => {
+        try {
+          return await broadcastAndConfirm(rpc, wire, config.commitment, "UNSHIELD");
+        } catch (err) {
+          console.log((err as Error).message);
+          console.log(UNSHIELD_AFTER_FAILED_SEND);
+          throw err;
+        }
+      },
+    });
+    console.log(
+      formatUnshieldSuccess({
+        signature: result.signature,
+        amountBaseUnits,
+        confidentialAfterBaseUnits: result.confidentialAfterBaseUnits,
+        publicAfterBaseUnits: result.publicAfterBaseUnits,
+      }),
     );
-  } catch (err) {
-    console.log((err as Error).message);
-    console.log(UNSHIELD_AFTER_FAILED_SEND);
-    throw err;
-  }
-  const after = await readToken();
-  const afterExtension = readConfidentialTransferAccount(after);
-  const afterConfidential =
-    afterExtension === undefined
-      ? { readable: false as const, reason: "the extension is gone" }
-      : decryptDecryptableBalance(
-          new Uint8Array(keys.aeKey),
-          new Uint8Array(afterExtension.decryptableAvailableBalance),
-        );
-  console.log(
-    formatUnshieldSuccess({
-      signature,
-      amountBaseUnits,
-      confidentialAfterBaseUnits: afterConfidential.readable
-        ? afterConfidential.baseUnits
-        : proofs.remainingBaseUnits,
-      publicAfterBaseUnits: after.exists ? after.data.amount : 0n,
-    }),
-  );
+  }, unshieldRefusalText(config.rpcDisplay));
 }
 
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (const [i, byte] of a.entries()) {
-    if (byte !== b[i]) return false;
-  }
-  return true;
+/** The sentences `unshield` words itself. */
+function unshieldRefusalText(cluster: string): (reason: HolderRefusalReason) => string | undefined {
+  return (reason) => {
+    switch (reason.kind) {
+      case "transaction-format-inactive":
+        return formatTransactionFormatRefusal({ state: reason.state, cluster, operation: UNSHIELD_OPERATION });
+      case "account-unapproved":
+        return UNSHIELD_UNAPPROVED_STOP;
+      case "insufficient-confidential-for-unshield":
+        return formatInsufficientConfidentialRefusal({
+          amountBaseUnits: reason.amountBaseUnits,
+          confidentialBaseUnits: reason.confidentialBaseUnits,
+        });
+      case "available-moved":
+        return formatBalanceMovedRefusal();
+      default:
+        return undefined;
+    }
+  };
 }

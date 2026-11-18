@@ -32,27 +32,12 @@
 // ddc apply-pending"), which a third party cannot act on.
 
 import { parseArgs } from "node:util";
-import {
-  address,
-  fetchEncodedAccount,
-  getAddressDecoder,
-  type Address,
-} from "@solana/kit";
-import { decodeToken, findAssociatedTokenPda } from "@solana-program/token-2022";
+import { address, type Address } from "@solana/kit";
 import { formatTargetBlock, requireWalletIdentity, resolveConfig } from "../config.js";
 import { createRpc } from "../rpc.js";
 import { loadSignerFromFile } from "../signer.js";
-import { deriveConfidentialKeys } from "../confidential-keys.js";
 import { formatPreSendKeyMismatch } from "../confidential-refusals.js";
-import {
-  readActivationState,
-  readConfidentialTransferAccount,
-} from "../confidential-account.js";
-import {
-  decryptDecryptableBalance,
-  decryptPendingBalance,
-  type DecryptResult,
-} from "../confidential-balance.js";
+import { type BalanceCopyCheck, type DecryptResult } from "../confidential-balance.js";
 import { formatDdcAmount } from "../amount.js";
 import {
   classifyCounterFill,
@@ -61,7 +46,7 @@ import {
   formatPendingValueWarning,
   shouldWarnPendingValue,
 } from "../confidential-warnings.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
+import { readHolderBalance } from "../holder/balance.js";
 
 const USAGE =
   "balance: usage — balance [wallet-address] --keypair <path> [--rpc-url <url>]";
@@ -139,13 +124,28 @@ export function formatShieldAlert(publicBaseUnits: bigint): string {
   );
 }
 
-/** WARNING: the stored expected/actual counter pair differs — the fast-read figure may understate. */
-export function formatStaleWarning(expected: bigint, actual: bigint): string {
+/**
+ * WARNING: the balance copy does not match the encrypted balance it copies.
+ * A short copy is corrected by ddc apply-pending (D-208 item 1); a difference past what this tool reads is not.
+ */
+export function formatStaleWarning(
+  check: Exclude<BalanceCopyCheck, { kind: "consistent" }>,
+  expected: bigint,
+  actual: bigint,
+): string {
+  const counters = `(stored expected counter ${expected}, actual ${actual})`;
+  if (check.kind === "short") {
+    return (
+      `WARNING — the confidential figure UNDERSTATES the true balance by ${formatDdcAmount(check.missingBaseUnits)} DDC ${counters}. ` +
+      "Cause: an apply or shield was raced by a credit, or two ran at the same time, so the fast-read copy was written without it. " +
+      "Risk: confidential sends from this account are refused until the copy is corrected. " +
+      "Action: run ddc apply-pending. It corrects the copy, even with nothing pending."
+    );
+  }
   return (
-    `WARNING — the confidential figure may UNDERSTATE the true balance (stored expected counter ${expected}, actual ${actual}). ` +
-    "Cause: a past apply raced an incoming credit, so the fast-read copy was written without it. " +
-    "Risk: the missing amount is not shown and is NOT recoverable by re-applying; recovery needs transaction history, a later capability. " +
-    "Action: treat the confidential figure as a lower bound until then."
+    `WARNING — the confidential figure does not match the encrypted balance, by more than this tool can read ${counters}. ` +
+    "Risk: the true figure is not shown, and confidential sends from this account are refused. " +
+    "Action: a correction needs the account's transaction history, which this tool does not read."
   );
 }
 
@@ -256,80 +256,46 @@ export async function runBalance(argv: string[]): Promise<void> {
   const identity = requireWalletIdentity(config);
   const signer = await loadSignerFromFile(identity.keypairPath);
   const owner = requestedOwner ?? signer.address;
-  const mine = owner === signer.address;
 
   console.log(formatTargetBlock(config));
 
-  const [tokenAccount] = await findAssociatedTokenPda({
-    owner,
-    tokenProgram: TOKEN_2022_PROGRAM,
-    mint: config.mint,
-  });
   const rpc = createRpc(config.rpcUrl);
-  const account = decodeToken(
-    await fetchEncodedAccount(rpc, tokenAccount, {
-      commitment: config.commitment,
-    }),
-  );
-  const publicBaseUnits = account.exists ? account.data.amount : 0n;
-  const state = readActivationState(account);
-  const extension = readConfidentialTransferAccount(account);
+  const b = await readHolderBalance({ rpc, commitment: config.commitment, mint: config.mint }, { owner, signer });
+  const publicLine = `${formatDdcAmount(b.publicBaseUnits)} DDC`;
 
-  if (!mine) {
+  if (b.kind === "foreign") {
+    console.log(formatBalanceBlock(b.tokenAccount, owner, { public: publicLine }));
     console.log(
-      formatBalanceBlock(tokenAccount, owner, {
-        public: `${formatDdcAmount(publicBaseUnits)} DDC`,
-      }),
+      `Confidential Balances : ${b.activation.kind === "configured" ? `activated (approved ${b.activation.approved})` : b.activation.kind}`,
     );
-    console.log(
-      `Confidential Balances : ${state.kind === "configured" ? `activated (approved ${state.approved})` : state.kind}`,
-    );
-    if (extension !== undefined) console.log(formatCountersLine(extension));
-    console.log(formatForeignNote(extension !== undefined));
+    if (b.extension !== undefined) console.log(formatCountersLine(b.extension));
+    console.log(formatForeignNote(b.extension !== undefined));
     return;
   }
 
-  if (state.kind !== "configured" || extension === undefined) {
-    console.log(
-      formatBalanceBlock(tokenAccount, owner, {
-        public: `${formatDdcAmount(publicBaseUnits)} DDC`,
-      }),
-    );
-    console.log(formatActivationOffer(state.kind === "absent" ? "absent" : "unconfigured"));
+  if (b.kind === "not-activated") {
+    console.log(formatBalanceBlock(b.tokenAccount, owner, { public: publicLine }));
+    console.log(formatActivationOffer(b.activation.kind === "absent" ? "absent" : "unconfigured"));
     return;
   }
 
-  // CONFIGURED AND MINE — derive late, once; compare before decrypting.
-  const keys = await deriveConfidentialKeys({
-    signer,
-  });
-  const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
-  if (derived !== extension.elgamalPubkey) {
+  if (b.kind === "key-mismatch") {
     const mismatch = formatKeyMismatchOutput({
-      tokenAccount,
+      tokenAccount: b.tokenAccount,
       owner,
-      publicBaseUnits,
-      onChainKey: extension.elgamalPubkey,
-      derivedKey: derived,
+      publicBaseUnits: b.publicBaseUnits,
+      onChainKey: b.onChainKey,
+      derivedKey: b.derivedKey,
     });
     console.log(mismatch.block);
     throw new Error(mismatch.refusal);
   }
 
-  const confidential = decryptDecryptableBalance(
-    new Uint8Array(keys.aeKey),
-    new Uint8Array(extension.decryptableAvailableBalance),
-  );
-  const pending = decryptPendingBalance(
-    new Uint8Array(keys.elgamalSecretKey),
-    new Uint8Array(extension.pendingBalanceLow),
-    new Uint8Array(extension.pendingBalanceHigh),
-  );
-
+  const { extension, confidential, pending } = b;
   console.log(
-    formatBalanceBlock(tokenAccount, owner, {
+    formatBalanceBlock(b.tokenAccount, owner, {
       confidential: formatFigure(confidential),
-      public: `${formatDdcAmount(publicBaseUnits)} DDC`,
+      public: publicLine,
       pending: formatFigure(pending),
     }),
   );
@@ -340,12 +306,12 @@ export async function runBalance(argv: string[]): Promise<void> {
   if (!pending.readable) {
     console.log(formatUnreadableWarning("pending", pending.reason));
   }
-  if (
-    extension.expectedPendingBalanceCreditCounter !==
-    extension.actualPendingBalanceCreditCounter
-  ) {
+  // THE COPY AGAINST THE BALANCE IT COPIES, not the counters: two shields
+  // run at the same time leave the counters equal and the copy short.
+  if (b.copyCheck !== undefined && b.copyCheck.kind !== "consistent") {
     console.log(
       formatStaleWarning(
+        b.copyCheck,
         extension.expectedPendingBalanceCreditCounter,
         extension.actualPendingBalanceCreditCounter,
       ),
@@ -361,7 +327,7 @@ export async function runBalance(argv: string[]): Promise<void> {
   if (pending.readable && pending.baseUnits > 0n) {
     console.log(formatPendingAlert(extension.pendingBalanceCreditCounter));
   }
-  if (publicBaseUnits > 0n) {
-    console.log(formatShieldAlert(publicBaseUnits));
+  if (b.publicBaseUnits > 0n) {
+    console.log(formatShieldAlert(b.publicBaseUnits));
   }
 }

@@ -1,5 +1,5 @@
 // Confidential-account setup transaction assembly — the FOUR-instruction path
-// that activates confidential balance on one DDC token account. Ordinary
+// that activates confidential balance on one token account of the mint. Ordinary
 // blockhash, single signer, self-pay: relay passage is never required and
 // `relay_endpoint` is not a recognized config key today.
 //
@@ -58,7 +58,7 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   type Address,
-  type KeyPairSigner,
+  type TransactionPartialSigner,
 } from "@solana/kit";
 import {
   ExtensionType,
@@ -77,7 +77,7 @@ import {
   ElGamalSecretKey,
   PubkeyValidityProofData,
 } from "@solana/zk-sdk/node";
-import { SYSVAR_INSTRUCTIONS, TOKEN_2022_PROGRAM } from "../constants.js";
+import { SYSVAR_INSTRUCTIONS, TOKEN_2022_PROGRAM } from "../program-addresses.js";
 
 /**
  * The pending-balance credit cap written at ConfigureAccount. Stated here and
@@ -102,7 +102,7 @@ export type BlockhashLifetime = Parameters<typeof setTransactionMessageLifetimeU
 
 export interface ConfidentialSetupInput {
   /** Fee payer, ATA payer, account owner and ConfigureAccount authority. */
-  signer: KeyPairSigner;
+  signer: TransactionPartialSigner;
   mint: Address;
   /** ElGamal SECRET key bytes from deriveConfidentialKeys. Never logged. */
   elgamalSecretKey: Uint8Array;

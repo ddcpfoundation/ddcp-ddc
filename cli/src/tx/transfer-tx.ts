@@ -62,7 +62,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   setTransactionMessageLoadedAccountsDataSizeLimit,
   type Address,
-  type KeyPairSigner,
+  type TransactionPartialSigner,
 } from "@solana/kit";
 import {
   findAssociatedTokenPda,
@@ -73,7 +73,7 @@ import {
   ZkElGamalProofInstruction,
 } from "@solana-program/zk-elgamal-proof";
 import { DECRYPTABLE_BALANCE_BYTES } from "../confidential-balance.js";
-import { SYSVAR_INSTRUCTIONS, TOKEN_2022_PROGRAM } from "../constants.js";
+import { SYSVAR_INSTRUCTIONS, TOKEN_2022_PROGRAM } from "../program-addresses.js";
 import type { BlockhashLifetime } from "./confidential-setup-tx.js";
 import { ELGAMAL_CIPHERTEXT_BYTES, EQUALITY_PROOF_BYTES } from "./unshield-proofs.js";
 import { V1_TRANSACTION_SIZE_LIMIT_BYTES } from "./unshield-tx.js";
@@ -131,7 +131,7 @@ function requireLength(bytes: Uint8Array, expected: number, what: string): void 
  * copy of the wrong length.
  */
 export async function assembleTransferTransaction(input: {
-  signer: KeyPairSigner;
+  signer: TransactionPartialSigner;
   mint: Address;
   /** The recipient's WALLET address; the token account is derived here. */
   recipient: Address;

@@ -230,11 +230,14 @@ export function formatRotateSignerSubmitInspection(
           : undefined;
   const lines: string[] = [];
   lines.push(
-    "VERIFY PASSED  : structural checks (a-f) OK against live chain state (submit stage: Reserve countersigner slot signed)",
+    "VERIFY PASSED  : structural checks (a-f) OK against live chain state (submit stage: Reserve countersigner and incoming key slots signed)",
   );
   lines.push("FULLY SIGNED   : every signature slot is signed");
   lines.push(
     "instruction    : rotate_signer (overwrites the target role's authority pubkey in PDA-1 — no CPI)",
+  );
+  lines.push(
+    `incoming key   : ${input.newPubkey} (signed the transaction that installs it)`,
   );
   lines.push(
     `will rotate    : target-role ${input.role} (${roleName}) -> new signer ${input.newPubkey}`,
@@ -245,7 +248,7 @@ export function formatRotateSignerSubmitInspection(
       : `current (pre)  : role ${input.role} does not exist on PDA-1 (roles are 0..2) — the transaction will be REJECTED on-chain (InvalidRole)`,
   );
   lines.push(
-    "IRREVERSIBLE   : once confirmed, the rotated-out key cannot undo this — recovery requires another Operator+Reserve rotate_signer",
+    "IRREVERSIBLE   : once confirmed, the rotated-out key cannot undo this — recovery requires another rotate_signer, signed by the Operator, the Reserve and the key it installs",
   );
   lines.push(`fee payer      : ${input.feePayer} (live operator)`);
   lines.push(`nonce value    : ${input.nonceValue}`);
@@ -340,7 +343,7 @@ export async function runAdminSubmit(argv: string[]): Promise<void> {
     .send();
   if (!pdaAccount) {
     throw new Error(
-      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcUrl}`,
+      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [pdaBase64] = pdaAccount.data;
@@ -428,7 +431,7 @@ export async function runAdminSubmit(argv: string[]): Promise<void> {
     .send();
   if (!nonceInfo) {
     throw new Error(
-      `${nonceLabel} nonce account ${wireNonceAccount} not found on cluster ${config.rpcUrl}`,
+      `${nonceLabel} nonce account ${wireNonceAccount} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [nonceBase64] = nonceInfo.data;
@@ -515,7 +518,7 @@ export async function runAdminSubmit(argv: string[]): Promise<void> {
         .send();
       if (!mintAccount) {
         throw new Error(
-          `mint account ${config.mint} not found on cluster ${config.rpcUrl}`,
+          `mint account ${config.mint} not found on cluster ${config.rpcDisplay}`,
         );
       }
       const [mintBase64] = mintAccount.data;

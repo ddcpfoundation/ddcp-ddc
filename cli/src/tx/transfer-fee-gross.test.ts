@@ -133,3 +133,27 @@ test("grossForNetPublic: exhaustive agreement with the shared fee arithmetic on 
     assert.equal(back.amounts.netTransferAmount, net);
   }
 });
+
+// THE SEARCH END IS CLAMPED TO THE BOUND (D-208 item 5). A cap is a ceiling on the fee, not the fee charged: with a
+// large cap, 'net + cap' passes the bound while the true gross does not.
+const HUGE_CAP: TransferFeeSchedule = { epoch: 0n, maximumFee: 18_446_744_073_709_551_615n, basisPoints: 100 };
+
+test("grossForNet and grossForNetPublic: a cap at u64 max no longer refuses a payment whose gross fits", () => {
+  assert.equal(grossForNet(1_000_000n, HUGE_CAP).grossBaseUnits, 1_010_102n);
+  assert.equal(grossForNetPublic(1_000_000n, HUGE_CAP).grossBaseUnits, 1_010_102n);
+  assert.equal(computeTransferFee(1_010_101n, HUGE_CAP).netTransferAmount, 999_999n);
+});
+
+test("grossForNet: just under the 48-bit bound, a gross that fits is found; one that does not is refused by name", () => {
+  const atBound = computeTransferFee(TRANSFER_AMOUNT_MAX_BASE_UNITS, HUGE_CAP).netTransferAmount;
+  const r = grossForNet(atBound, HUGE_CAP);
+  assert.ok(r.grossBaseUnits <= TRANSFER_AMOUNT_MAX_BASE_UNITS);
+  assert.equal(r.split.netTransferAmount, atBound);
+  assert.throws(() => grossForNet(atBound + 1n, HUGE_CAP), /proven in 48 bits/);
+});
+
+test("grossForNetPublic: at the u64 bound with a huge cap, the reachable net is found and the next one refused", () => {
+  const atBound = computeTransferFee(PUBLIC_TRANSFER_AMOUNT_MAX_BASE_UNITS, HUGE_CAP).netTransferAmount;
+  assert.equal(grossForNetPublic(atBound, HUGE_CAP).amounts.netTransferAmount, atBound);
+  assert.throws(() => grossForNetPublic(atBound + 1n, HUGE_CAP), /one transfer carries at most/);
+});

@@ -394,11 +394,14 @@ pub fn publish_ix(
     )
 }
 
+/// The I-8 accounts: mint, PDA-1, operator, reserve and the incoming key, which
+/// signs (D-210). Negative tests mutate entries before sending.
 pub fn rotate_ix(
     mint: &Pubkey,
     pda1: &Pubkey,
     operator: &Pubkey,
     reserve: &Pubkey,
+    new_authority: &Pubkey,
     arg_bytes: Vec<u8>,
 ) -> Instruction {
     build_ix(
@@ -408,6 +411,7 @@ pub fn rotate_ix(
             AccountMeta::new(*pda1, false),
             AccountMeta::new_readonly(*operator, true),
             AccountMeta::new_readonly(*reserve, true),
+            AccountMeta::new_readonly(*new_authority, true),
         ],
         arg_bytes,
     )

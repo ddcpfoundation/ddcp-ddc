@@ -36,8 +36,8 @@
 // amount is proven as a 16-bit low half and a 32-bit high half, so anything
 // above 2^48 - 1 base units produces a range proof the program rejects at
 // verification. Upstream asserts only u64 and lets the doomed transaction be
-// built; here the bound is refused by name at the shape stage. In DDC that
-// is 281,474,976.710655 -- the figure amount.test.ts already round-trips.
+// built; here the bound is refused by name at the shape stage. At six
+// decimals that is 281,474,976.710655 -- the figure amount.test.ts already round-trips.
 //
 // THE CORE AND ITS WRAPPERS. 'computeTransferFee' is the fee arithmetic alone
 // -- Token-2022's calculate_fee, which the program applies to

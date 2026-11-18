@@ -111,6 +111,7 @@ async function assembleForTest(overrides: Partial<ShieldInput> = {}) {
   const result = await assembleShieldTransaction({
     signer,
     mint: DDC_MINT,
+    decimals: DDC_DECIMALS,
     amountBaseUnits: TEST_AMOUNT,
     newDecryptableAvailableBalance: TEST_CIPHERTEXT,
     pendingBalanceCreditCounterAtRead: TEST_COUNTER_AT_READ,
@@ -225,6 +226,7 @@ test("shield-tx determinism: two assemblies over identical inputs produce identi
   const input = {
     signer,
     mint: DDC_MINT,
+    decimals: DDC_DECIMALS,
     amountBaseUnits: TEST_AMOUNT,
     newDecryptableAvailableBalance: TEST_CIPHERTEXT,
     pendingBalanceCreditCounterAtRead: TEST_COUNTER_AT_READ,
@@ -252,6 +254,7 @@ test("shield-tx: the amount cap is 2^48 - 1; the cap itself assembles, the cap p
         assembleShieldTransaction({
           signer,
           mint: DDC_MINT,
+          decimals: DDC_DECIMALS,
           amountBaseUnits,
           newDecryptableAvailableBalance: TEST_CIPHERTEXT,
           pendingBalanceCreditCounterAtRead: TEST_COUNTER_AT_READ,
@@ -274,6 +277,7 @@ test("shield-tx: a ciphertext of the wrong length is refused before assembly", a
       assembleShieldTransaction({
         signer,
         mint: DDC_MINT,
+        decimals: DDC_DECIMALS,
         amountBaseUnits: TEST_AMOUNT,
         newDecryptableAvailableBalance: new Uint8Array(35),
         pendingBalanceCreditCounterAtRead: TEST_COUNTER_AT_READ,

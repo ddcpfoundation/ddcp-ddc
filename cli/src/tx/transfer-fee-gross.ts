@@ -96,6 +96,22 @@ function smallestGross(netBaseUnits: bigint, schedule: TransferFeeSchedule, uppe
   return lo;
 }
 
+/**
+ * The upper end of the search, within the path's bound. 'net + maximumFee'
+ * always suffices (fact 2) but can lie past the bound while the true gross
+ * does not: a cap is a ceiling on the fee, not the fee charged. So the end is
+ * clamped to the bound, and the search is refused only when even the bound
+ * nets less than the stated net (fact 1: the net never decreases as the gross
+ * rises, so nothing within the bound can reach it). Returns undefined then.
+ * (D-208 item 5.)
+ */
+function boundedUpper(netBaseUnits: bigint, schedule: TransferFeeSchedule, bound: bigint): bigint | undefined {
+  const sufficient = netBaseUnits + schedule.maximumFee;
+  if (sufficient <= bound) return sufficient;
+  if (netBaseUnits > bound) return undefined;
+  return computeTransferFee(bound, schedule).netTransferAmount >= netBaseUnits ? bound : undefined;
+}
+
 /** The refusal both inverses share when no gross yields the stated net exactly. */
 function noExactGross(netBaseUnits: bigint, gross: bigint, net: bigint): Error {
   return new Error(
@@ -113,8 +129,8 @@ export function grossForNet(netBaseUnits: bigint, schedule: TransferFeeSchedule)
   requirePositiveNet(netBaseUnits);
   // Upper end of the interval, always sufficient (fact 2). Checked against
   // the bound BEFORE any split so the refusal names the sender's figure.
-  const upper = netBaseUnits + schedule.maximumFee;
-  if (upper > TRANSFER_AMOUNT_MAX_BASE_UNITS) {
+  const upper = boundedUpper(netBaseUnits, schedule, TRANSFER_AMOUNT_MAX_BASE_UNITS);
+  if (upper === undefined) {
     throw new Error(
       "refusing to transfer " + netBaseUnits + " base units to the recipient: with the fee added, one confidential transfer carries at most " +
         TRANSFER_AMOUNT_MAX_BASE_UNITS + " base units (the amount is proven in 48 bits)",
@@ -136,8 +152,8 @@ export function grossForNet(netBaseUnits: bigint, schedule: TransferFeeSchedule)
  */
 export function grossForNetPublic(netBaseUnits: bigint, schedule: TransferFeeSchedule): GrossForNetPublic {
   requirePositiveNet(netBaseUnits);
-  const upper = netBaseUnits + schedule.maximumFee;
-  if (upper > PUBLIC_TRANSFER_AMOUNT_MAX_BASE_UNITS) {
+  const upper = boundedUpper(netBaseUnits, schedule, PUBLIC_TRANSFER_AMOUNT_MAX_BASE_UNITS);
+  if (upper === undefined) {
     throw new Error(
       "refusing to transfer " + netBaseUnits + " base units to the recipient: with the fee added, one transfer carries at most " +
         PUBLIC_TRANSFER_AMOUNT_MAX_BASE_UNITS + " base units",

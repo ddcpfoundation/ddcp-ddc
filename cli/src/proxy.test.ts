@@ -122,3 +122,36 @@ test("proxy: the disclosure line, whole", () => {
     "PROXY          : http://127.0.0.1:8118 (file) -- every network request of this command goes through it. If it cannot be reached the command fails; nothing is ever sent direct.",
   );
 });
+
+// THE SETTING IS NEVER ECHOED (D-208 item 8): a
+// user name, a password or a key in the path or query never reaches output.
+
+test("proxy: no refusal repeats a user name, a password or a key from the setting", () => {
+  for (const value of [
+    "socks5://alice:PLACEHOLDERPW@127.0.0.1:9050",
+    "ftp://alice:PLACEHOLDERPW@127.0.0.1:21",
+    "http://alice:PLACEHOLDERPW@127.0.0.1:8080",
+    "http://127.0.0.1:8080/?key=PLACEHOLDERPW",
+    "http://127.0.0.1:8080/PLACEHOLDERPW",
+    "PLACEHOLDERPW not a url",
+  ]) {
+    assert.throws(
+      () => parseProxyUrl(value),
+      (err: Error) => !err.message.includes("PLACEHOLDERPW") && !err.message.includes("alice"),
+      value,
+    );
+  }
+});
+
+test("proxy: credentials are refused before the scheme, whatever the scheme", () => {
+  assert.throws(() => parseProxyUrl("socks5://alice:PLACEHOLDERPW@127.0.0.1:9050"), /carries a user name or password/);
+  assert.throws(() => parseProxyUrl("ftp://alice:PLACEHOLDERPW@127.0.0.1:21"), /carries a user name or password/);
+});
+
+test("proxy: a credential-bearing SOCKS setting in the config file is refused at the gate without echoing it", () => {
+  withConfig('{"proxy":"socks5://alice:PLACEHOLDERPW@127.0.0.1:9050"}', (argv) => {
+    const d = decideProxy(argv, {});
+    assert.equal(d.kind, "refuse");
+    assert.ok(!(d as { message: string }).message.includes("PLACEHOLDERPW"));
+  });
+});

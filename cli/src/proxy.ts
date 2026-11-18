@@ -55,19 +55,22 @@ export function parseProxyUrl(value: string): string {
   try {
     url = new URL(value);
   } catch {
-    throw new Error(`the proxy setting "${value}" is not a URL. It must look like http://host:port.`);
+    throw new Error("the proxy setting is not a URL. It must look like http://host:port.");
   }
-  if (url.protocol.startsWith("socks")) {
-    throw new Error(`the proxy setting "${value}" is a SOCKS address. ${BRIDGE_SENTENCE}`);
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`the proxy setting "${value}" must start with http:// or https://. ${BRIDGE_SENTENCE}`);
-  }
+  // NEVER ECHO THE SETTING ITSELF: it may carry a user name, a password or a
+  // key in its path or query. Every refusal names the scheme and host only.
+  const shown = `${url.protocol}//${url.host}`;
   if (url.username !== "" || url.password !== "") {
     throw new Error("the proxy setting carries a user name or password, which this build does not support: it would be printed on every run. Use a proxy that needs none.");
   }
+  if (url.protocol.startsWith("socks")) {
+    throw new Error(`the proxy setting "${shown}" is a SOCKS address. ${BRIDGE_SENTENCE}`);
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error(`the proxy setting "${shown}" must start with http:// or https://. ${BRIDGE_SENTENCE}`);
+  }
   if (url.pathname !== "/" || url.search !== "" || url.hash !== "") {
-    throw new Error(`the proxy setting "${value}" must be a bare address, http://host:port, with no path, query or fragment.`);
+    throw new Error(`the proxy setting "${shown}" must be a bare address, http://host:port, with no path, query or fragment.`);
   }
   return url.origin;
 }

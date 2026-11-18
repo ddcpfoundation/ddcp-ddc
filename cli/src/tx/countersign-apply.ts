@@ -1,4 +1,5 @@
-// PURE Reserve-countersignature application.
+// PURE Reserve-countersignature application, also used for the I-8 incoming
+// key's signature (D-210): the function is signer-agnostic.
 // Offline: no network, no file I/O, and no message reconstruction — the Reserve
 // key signs the transaction's EXISTING messageBytes, and kit's
 // partiallySignTransaction MERGES into the existing signatures map, so the

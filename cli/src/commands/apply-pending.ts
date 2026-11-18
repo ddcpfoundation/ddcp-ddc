@@ -3,10 +3,10 @@
 //
 // ORDER: shape, target block,
 // requireStatedCluster, identity, blockhash, account read, derive, decrypt,
-// warn, compute, re-read, announce, send, read back. The command READS BEFORE
-// IT DERIVES: a counter of zero establishes that nothing is pending with no key
-// at all, so the wallet is never asked for the derivation signature on an
-// account that has nothing to apply.
+// check the copy, warn, compute, re-read, announce, send, read back. The
+// command derives even at a counter of zero: telling a balance copy that
+// matches the encrypted balance from a short one takes the key, and a short
+// copy is corrected by this command with nothing pending (D-208 item 1). An unactivated account still stops before it.
 //
 // NO y/n PROMPT: the announcement is a disclosure, not a
 // question. A user command carries no --broadcast, and the
@@ -32,14 +32,7 @@
 // DDC and the command is ddc — the two never converge. The plural is rendered properly, never as "(s)".
 
 import { parseArgs } from "node:util";
-import {
-  assertIsFullySignedTransaction,
-  fetchEncodedAccount,
-  getAddressDecoder,
-  getBase64EncodedWireTransaction,
-  type Signature,
-} from "@solana/kit";
-import { decodeToken, findAssociatedTokenPda } from "@solana-program/token-2022";
+import { type Signature } from "@solana/kit";
 import {
   formatTargetBlock,
   requireStatedCluster,
@@ -48,12 +41,7 @@ import {
 } from "../config.js";
 import { createRpc } from "../rpc.js";
 import { loadSignerFromFile } from "../signer.js";
-import { deriveConfidentialKeys } from "../confidential-keys.js";
-import {
-  formatPostApplyMismatch,
-  formatPreSendKeyMismatch,
-  formatUnreadableRefusal,
-} from "../confidential-refusals.js";
+import { formatCopyCorrectionNotice, formatPostApplyMismatch } from "../confidential-refusals.js";
 import {
   classifyCounterFill,
   formatCounterFillingWarning,
@@ -61,40 +49,36 @@ import {
   formatPendingValueWarning,
   shouldWarnPendingValue,
 } from "../confidential-warnings.js";
-import {
-  readConfidentialTransferAccount,
-  type ConfidentialTransferAccountExtension,
-} from "../confidential-account.js";
-import {
-  decryptDecryptableBalance,
-  decryptPendingBalance,
-  encryptDecryptableBalance,
-} from "../confidential-balance.js";
 import { formatDdcAmount } from "../amount.js";
 import { NETWORK_FEE_LINE } from "../announcements.js";
-import { assembleApplyPendingTransaction } from "../tx/apply-pending-tx.js";
 import { broadcastAndConfirm } from "../tx/broadcast.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
+import { prepareApplyPending, sendApplyPending } from "../holder/apply-pending.js";
+import type { HolderRefusalReason } from "../holder/refusal.js";
+import { withRefusalText } from "../holder-refusal-text.js";
 
 const USAGE =
   "apply-pending: usage — apply-pending --keypair <path> --rpc-url <url>";
 
-/** Named so the reader's return type stays on one line. */
-type ExtensionOrAbsent = ConfidentialTransferAccountExtension | undefined;
-
-/** The announcement header. Count rendered plainly. */
+/**
+ * The announcement header. Count rendered plainly. A send with nothing
+ * pending is reached only when the balance copy is short, so zero credits
+ * names the correction, never "folding 0" (D-212).
+ */
 export function formatApplyHeader(credits: bigint): string {
+  if (credits === 0n) {
+    return "APPLY PENDING BALANCE — nothing pending; this request writes the corrected balance copy only";
+  }
   const noun = credits === 1n ? "pending credit" : "pending credits";
   return `APPLY PENDING BALANCE — folding ${credits} ${noun} into your confidential balance`;
 }
 
 /**
- * The zero-stop. No figure appears: this branch performs no
- * derivation, and a figure printed without decrypting would
- * be stated rather than computed. The command prints this and stops.
+ * The zero-stop: no pending credit, and the balance copy matches the
+ * encrypted balance. No figure appears. With a short copy the command does
+ * not stop: it writes the corrected copy (D-208 item 1), so reaching this stop now takes the key derivation.
  */
 export const APPLY_ZERO_STOP =
-  "Nothing to apply — pending credit counter 0. No transaction was sent and no fee was paid.";
+  "Nothing to apply — pending credit counter 0, and the balance copy matches the encrypted balance. No transaction was sent and no fee was paid.";
 
 /**
  * The unactivated-account stop: this command's OWN sentence,
@@ -164,6 +148,13 @@ export function formatApplySuccess(input: {
   credits: bigint;
   confidentialAfterBaseUnits: bigint;
 }): string {
+  if (input.credits === 0n) {
+    // Printed only after the read-back found the copy consistent (D-212).
+    return (
+      `APPLY-PENDING CONFIRMED — signature ${input.signature}; ` +
+      `nothing pending was folded, and the balance copy now reads ${formatDdcAmount(input.confidentialAfterBaseUnits)} DDC, matching your encrypted balance.`
+    );
+  }
   const noun = input.credits === 1n ? "pending credit" : "pending credits";
   return (
     `APPLY-PENDING CONFIRMED — signature ${input.signature}; ` +
@@ -207,180 +198,98 @@ export async function runApplyPending(argv: string[]): Promise<void> {
 
   const identity = requireWalletIdentity(config);
   const signer = await loadSignerFromFile(identity.keypairPath);
-
-  const [tokenAccount] = await findAssociatedTokenPda({
-    owner: signer.address,
-    tokenProgram: TOKEN_2022_PROGRAM,
-    mint: config.mint,
-  });
-
   const rpc = createRpc(config.rpcUrl);
-  const readExtension = async (): Promise<ExtensionOrAbsent> =>
-    readConfidentialTransferAccount(
-      decodeToken(
-        await fetchEncodedAccount(rpc, tokenAccount, {
-          commitment: config.commitment,
-        }),
-      ),
-    );
+  const ctx = { rpc, commitment: config.commitment, mint: config.mint };
 
-  // BLOCKHASH BEFORE THE ACCOUNT READ: one fewer round trip
-  // between the counter this command reads and the counter the network sees.
-  // It is fetched even on the two stop paths below, which cost nothing but a
-  // read; the ordering is what shortens the send window.
-  const { value: blockhash } = await rpc
-    .getLatestBlockhash({ commitment: config.commitment })
-    .send();
+  await withRefusalText(async () => {
+    const plan = await prepareApplyPending(ctx, { signer });
+    if (plan.kind === "not-activated") {
+      console.log(APPLY_UNACTIVATED_STOP);
+      return;
+    }
+    if (plan.kind === "nothing-to-apply") {
+      console.log(APPLY_ZERO_STOP);
+      return;
+    }
 
-  const extension = await readExtension();
-  if (extension === undefined) {
-    console.log(APPLY_UNACTIVATED_STOP);
-    return;
-  }
-  const creditsAtRead = extension.pendingBalanceCreditCounter;
-  if (creditsAtRead === 0n) {
-    console.log(APPLY_ZERO_STOP);
-    return;
-  }
+    // THRESHOLD WARNINGS, printed before the announcement because they
+    // describe the state being acted on. The counter trigger is computed
+    // against the EXACT cap read from THIS account's extension.
+    if (shouldWarnPendingValue(plan.pendingBaseUnits)) {
+      console.log(formatPendingValueWarning(plan.pendingBaseUnits));
+    }
+    const fill = classifyCounterFill(plan.credits, plan.cap);
+    if (fill === "filling") {
+      console.log(formatCounterFillingWarning(plan.credits, plan.cap));
+    } else if (fill === "full") {
+      console.log(formatCounterFullWarning(plan.credits));
+    }
+    if (plan.correctionBaseUnits > 0n) {
+      console.log(formatCopyCorrectionNotice(plan.correctionBaseUnits));
+    }
 
-  // READ BEFORE DERIVE is discharged by the two stops above: neither costs the
-  // holder a signature. Only here is the wallet asked, once.
-  const keys = await deriveConfidentialKeys({
-    signer,
-  });
-  const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
-  if (derived !== extension.elgamalPubkey) {
-    throw new Error(
-      formatPreSendKeyMismatch({
-        onChainKey: extension.elgamalPubkey,
-        derivedKey: derived,
-      }),
-    );
-  }
-
-  const confidential = decryptDecryptableBalance(
-    new Uint8Array(keys.aeKey),
-    new Uint8Array(extension.decryptableAvailableBalance),
-  );
-  const pending = decryptPendingBalance(
-    new Uint8Array(keys.elgamalSecretKey),
-    new Uint8Array(extension.pendingBalanceLow),
-    new Uint8Array(extension.pendingBalanceHigh),
-  );
-  // THE SIXTH REFUSAL. The confidential figure
-  // is tested FIRST so that, when both are unreadable, the message names the
-  // figure the display order names first.
-  if (!confidential.readable) {
-    throw new Error(formatUnreadableRefusal("confidential"));
-  }
-  if (!pending.readable) {
-    throw new Error(formatUnreadableRefusal("pending"));
-  }
-
-  // THRESHOLD WARNINGS, printed before
-  // the announcement because they describe the state being acted on. The
-  // counter trigger is computed against the EXACT cap read from THIS account's
-  // extension, never a rounded or shared figure.
-  if (shouldWarnPendingValue(pending.baseUnits)) {
-    console.log(formatPendingValueWarning(pending.baseUnits));
-  }
-  const cap = extension.maximumPendingBalanceCreditCounter;
-  const fill = classifyCounterFill(creditsAtRead, cap);
-  if (fill === "filling") {
-    console.log(formatCounterFillingWarning(creditsAtRead, cap));
-  } else if (fill === "full") {
-    console.log(formatCounterFullWarning(creditsAtRead));
-  }
-
-  // THE ARITHMETIC: available plus pending. The guarded
-  // wrapper throws rather than letting the encoder wrap silently at 2^64.
-  const confidentialAfter = confidential.baseUnits + pending.baseUnits;
-  const newDecryptableAvailableBalance = encryptDecryptableBalance(
-    new Uint8Array(keys.aeKey),
-    confidentialAfter,
-  );
-
-  // THE SECOND COUNTER READ, placed immediately before the
-  // announcement so the announcement is the last thing between the holder and
-  // the send. A moved counter means every figure above is stale.
-  const atSend = await readExtension();
-  if (atSend === undefined) {
-    throw new Error(
-      `token account ${tokenAccount} stopped reporting a ConfidentialTransferAccount extension between this command's two reads. Nothing was sent and no fee was paid.`,
-    );
-  }
-  if (atSend.pendingBalanceCreditCounter !== creditsAtRead) {
-    throw new Error(
-      formatCounterMovedRefusal({
-        atRead: creditsAtRead,
-        atSend: atSend.pendingBalanceCreditCounter,
-      }),
-    );
-  }
-
-  console.log(
-    formatApplyAnnouncement({
-      credits: creditsAtRead,
-      pendingBaseUnits: pending.baseUnits,
-      confidentialAfterBaseUnits: confidentialAfter,
-      cluster: config.rpcUrl,
-      clusterSource: config.source.rpcUrl,
-    }),
-  );
-
-  // ONE SIGNER, knowingly temporary. A relay fee payer would add
-  // a second signature slot, and the single-signer assertion in
-  // tx/apply-pending-tx.test.ts is what forces the fee copy to be re-read on
-  // the day it does. THE COUNTER PASSED HERE IS creditsAtRead — see the header.
-  const { transaction, tokenAccount: assembledFor } =
-    await assembleApplyPendingTransaction({
+    // THE SEND-TIME CHECK runs first inside sendApplyPending; the
+    // announcement is printed only once it passes, as the last thing before
+    // the send. A disclosure, not a question: no y/n follows it.
+    const { signature, readBack } = await sendApplyPending(ctx, plan, {
       signer,
-      mint: config.mint,
-      newDecryptableAvailableBalance,
-      expectedPendingBalanceCreditCounter: creditsAtRead,
-      blockhash,
+      afterCheck: () =>
+        console.log(
+          formatApplyAnnouncement({
+            credits: plan.credits,
+            pendingBaseUnits: plan.pendingBaseUnits,
+            confidentialAfterBaseUnits: plan.confidentialAfterBaseUnits,
+            cluster: config.rpcDisplay,
+            clusterSource: config.source.rpcUrl,
+          }),
+        ),
+      submit: (wire) => broadcastAndConfirm(rpc, wire, config.commitment, "APPLY-PENDING"),
     });
-  if (assembledFor !== tokenAccount) {
-    throw new Error(
-      `token account derived twice and differs: ${tokenAccount} here, ${assembledFor} in the assembly — nothing was sent`,
-    );
-  }
-  assertIsFullySignedTransaction(transaction); // single signer ⇒ fully signed
-
-  const signature = await broadcastAndConfirm(
-    rpc,
-    getBase64EncodedWireTransaction(transaction),
-    config.commitment,
-    "APPLY-PENDING",
-  );
-
-  // POST-SEND READ-BACK: EXPECTED against ACTUAL, both fields
-  // off ONE decode. A difference means a credit landed
-  // between this command's read and the network's execution, so the balance
-  // copy just written is short.
-  const after = await readExtension();
-  if (after === undefined) {
-    throw new Error(
-      `APPLY-PENDING: the network confirmed signature ${signature}, but token account ${tokenAccount} no longer reports a ConfidentialTransferAccount extension. Most likely a stale or lagging RPC read. Re-read from a second RPC endpoint before doing anything else, and do NOT repeat this command until you have.`,
-    );
-  }
-  if (
-    after.expectedPendingBalanceCreditCounter !==
-    after.actualPendingBalanceCreditCounter
-  ) {
+    if (readBack.kind === "mismatch") {
+      console.log(
+        formatPostApplyMismatch({
+          expected: readBack.expected,
+          actual: readBack.actual,
+          check: readBack.check,
+        }),
+      );
+      return;
+    }
     console.log(
-      formatPostApplyMismatch({
-        expected: after.expectedPendingBalanceCreditCounter,
-        actual: after.actualPendingBalanceCreditCounter,
+      formatApplySuccess({
+        signature,
+        credits: plan.credits,
+        confidentialAfterBaseUnits: plan.confidentialAfterBaseUnits,
       }),
     );
-    return;
-  }
-  console.log(
-    formatApplySuccess({
-      signature,
-      credits: creditsAtRead,
-      confidentialAfterBaseUnits: confidentialAfter,
-    }),
+  }, applyPendingRefusalText);
+}
+
+/**
+ * The available-balance refusal: the encrypted balance changed between the
+ * read the figures were computed from and the send, with the counter
+ * unchanged, as when a shield or another apply-pending on this account landed
+ * in that window.
+ */
+export function formatApplyBalanceMovedRefusal(): string {
+  return (
+    "REFUSED — your confidential account changed between this command's read and its send (available balance changed). " +
+    "Cause: a confidential credit or another command on this account landed in that window. " +
+    "Risk: the balance copy this request would write was computed before it, so sending now would understate your confidential balance. Nothing was sent and no fee was paid. " +
+    "Action: run ddc apply-pending again."
   );
+}
+
+/** The sentences `apply-pending` words itself. */
+function applyPendingRefusalText(reason: HolderRefusalReason): string | undefined {
+  switch (reason.kind) {
+    case "counter-moved":
+      return formatCounterMovedRefusal({ atRead: reason.atRead, atSend: reason.atSend });
+    case "available-moved":
+      return formatApplyBalanceMovedRefusal();
+    case "extension-gone-after-send":
+      return `APPLY-PENDING: the network confirmed signature ${reason.signature}, but token account ${reason.tokenAccount} no longer reports a ConfidentialTransferAccount extension. Most likely a stale or lagging RPC read. Re-read from a second RPC endpoint before doing anything else, and do NOT repeat this command until you have.`;
+    default:
+      return undefined;
+  }
 }

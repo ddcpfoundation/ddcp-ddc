@@ -98,7 +98,7 @@ test("send failure: the three refusals state cause, risk and action, and only th
 test("send failure: an on-chain err throws a BroadcastFailure whose message is the one callers always printed", async () => {
   resetRecord();
   const err = { InstructionError: [0, { Custom: 1 }] };
-  const rpc = fakeRpc(() => Promise.resolve("SIG444"), () => Promise.resolve({ value: [{ err, confirmationStatus: "processed" }] }));
+  const rpc = fakeRpc(() => Promise.resolve("SIG444"), () => Promise.resolve({ value: [{ err, confirmationStatus: "confirmed" }] }));
   await assert.rejects(broadcastAndConfirm(rpc, WIRE, "confirmed", "TEST", FAST), (e: unknown) => {
     assert.ok(e instanceof BroadcastFailure);
     assert.equal(e.message, "TEST FAILED on-chain: {\"InstructionError\":[0,{\"Custom\":1}]} (signature SIG444)");
@@ -172,4 +172,31 @@ test("send failure entry: the built entry routes the preflight error code to the
     endpoint.closeAllConnections();
     endpoint.close();
   }
+});
+
+// AN ERROR AT "processed" IS NOT FINAL (D-208 item 3): the poll goes on until the status settles.
+
+test("send failure: an err at processed is not reported as final; the poll goes on and a later confirmed success returns the signature", async () => {
+  const statuses = [
+    { err: { InstructionError: [1, { Custom: 1 }] }, confirmationStatus: "processed" },
+    { err: null, confirmationStatus: "confirmed" },
+  ];
+  let i = 0;
+  const rpc = fakeRpc(() => Promise.resolve("SIG555"), () => Promise.resolve({ value: [statuses[Math.min(i++, 1)]] }));
+  assert.equal(await broadcastAndConfirm(rpc, WIRE, "confirmed", "TEST", FAST), "SIG555");
+});
+
+test("send failure: an err at processed that settles as an err at confirmed is reported on-chain", async () => {
+  const err = { InstructionError: [1, { Custom: 1 }] };
+  const statuses = [{ err, confirmationStatus: "processed" }, { err, confirmationStatus: "confirmed" }];
+  let i = 0;
+  const rpc = fakeRpc(() => Promise.resolve("SIG666"), () => Promise.resolve({ value: [statuses[Math.min(i++, 1)]] }));
+  await assert.rejects(broadcastAndConfirm(rpc, WIRE, "confirmed", "TEST", FAST), (e: unknown) =>
+    e instanceof BroadcastFailure && e.detail.kind === "on-chain");
+});
+
+test("send failure: an err that never leaves processed ends as unconfirmed, which says it may still land", async () => {
+  const rpc = fakeRpc(() => Promise.resolve("SIG777"), () => Promise.resolve({ value: [{ err: { InstructionError: [1, { Custom: 1 }] }, confirmationStatus: "processed" }] }));
+  await assert.rejects(broadcastAndConfirm(rpc, WIRE, "confirmed", "TEST", FAST), (e: unknown) =>
+    e instanceof BroadcastFailure && e.detail.kind === "unconfirmed");
 });

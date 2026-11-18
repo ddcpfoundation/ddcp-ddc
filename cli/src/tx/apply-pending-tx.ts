@@ -27,7 +27,7 @@
 // makes an owner/signer mismatch unrepresentable rather than merely unchecked.
 //
 // NO ComputeBudget INSTRUCTION OF ANY KIND. `SetComputeUnitPrice` must never
-// appear in a DDC transaction and the sibling test asserts its absence.
+// appear in a transaction of this mint and the sibling test asserts its absence.
 // `SetComputeUnitLimit` is not needed either: the raised budget the relay
 // path requires is for PROOF VERIFICATION, and this instruction verifies no
 // proof.
@@ -46,19 +46,19 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   type Address,
-  type KeyPairSigner,
+  type TransactionPartialSigner,
 } from "@solana/kit";
 import {
   findAssociatedTokenPda,
   getApplyConfidentialPendingBalanceInstruction,
 } from "@solana-program/token-2022";
 import { DECRYPTABLE_BALANCE_BYTES } from "../confidential-balance.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
+import { TOKEN_2022_PROGRAM } from "../program-addresses.js";
 import type { BlockhashLifetime } from "./confidential-setup-tx.js";
 
 export interface ApplyPendingInput {
   /** Fee payer and token-account authority. One signer, two roles. */
-  signer: KeyPairSigner;
+  signer: TransactionPartialSigner;
   mint: Address;
   /**
    * The 36-byte AES ciphertext of available + pending, produced by the CALLER

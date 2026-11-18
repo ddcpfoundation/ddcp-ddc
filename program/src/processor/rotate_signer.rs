@@ -10,11 +10,15 @@
 //! Validation order is also fixed: `new_pubkey != default` (InvalidPubkey)
 //! **before** `role <= 2` (InvalidRole).
 //!
-//! After the role check, the three keys as they would stand are required to be
-//! distinct (CoSignersNotDistinct): a replacement may not give one role
-//! another role's current key. Replacing a key with itself leaves the three
-//! unchanged and stays permitted, as does self-rotation (the current Operator/Reserve
-//! rotating their own slot).
+//! After the role check, the new key must have signed the transaction, in the
+//! fifth account (MissingRequiredSignature if it did not sign, Unauthorized if
+//! the account is not `new_pubkey`), so no role can be handed to an address
+//! nobody can sign for (D-210). Then the three keys as they would stand are
+//! required to be distinct (CoSignersNotDistinct): a replacement may not give
+//! one role another role's current key. Replacing a key with itself leaves the
+//! three unchanged and stays permitted, as does self-rotation (the current
+//! Operator/Reserve rotating their own slot); the key then signs once and its
+//! signature covers both of its account positions.
 
 use borsh::BorshDeserialize;
 use solana_program::{
@@ -27,7 +31,8 @@ use solana_program::{
 use crate::{error::DdcError, instruction::RotateSignerArgs, pda, state::MintState, validation};
 
 /// I-8 — accounts: `mint` (read-only, seed only) · `PDA-1` (writable) ·
-/// `operator_authority` (signer) · `reserve_authority` (signer).
+/// `operator_authority` (signer) · `reserve_authority` (signer) ·
+/// `new_authority` (signer; must be `new_pubkey`).
 pub fn process_rotate_signer(
     program_id: &Pubkey,
     accounts: &[AccountInfo],
@@ -42,6 +47,7 @@ pub fn process_rotate_signer(
     let pda1 = next_account_info(iter)?;
     let operator = next_account_info(iter)?;
     let reserve = next_account_info(iter)?;
+    let new_authority = next_account_info(iter)?;
 
     // Structural checks on PDA-1: ownership -> derivation -> writable.
     validation::assert_owned_by(pda1, program_id)?;
@@ -67,6 +73,8 @@ pub fn process_rotate_signer(
         2 => state.reserve_authority = args.new_pubkey,
         _ => return Err(DdcError::InvalidRole.into()),
     }
+    // The incoming key consents: it signed, and it is the key being stored.
+    validation::assert_authority(new_authority, &args.new_pubkey)?;
     validation::assert_distinct_co_signers(
         &state.issuer_authority,
         &state.operator_authority,

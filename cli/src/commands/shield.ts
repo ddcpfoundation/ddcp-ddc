@@ -41,14 +41,7 @@
 
 import { EXIT_NOT_DONE, type CommandOutcome } from "../exit-status.js";
 import { parseArgs } from "node:util";
-import {
-  assertIsFullySignedTransaction,
-  fetchEncodedAccount,
-  getAddressDecoder,
-  getBase64EncodedWireTransaction,
-  type Signature,
-} from "@solana/kit";
-import { decodeToken, findAssociatedTokenPda } from "@solana-program/token-2022";
+import { type Signature } from "@solana/kit";
 import {
   formatTargetBlock,
   requireStatedCluster,
@@ -57,25 +50,13 @@ import {
 } from "../config.js";
 import { createRpc } from "../rpc.js";
 import { loadSignerFromFile } from "../signer.js";
-import { deriveConfidentialKeys } from "../confidential-keys.js";
-import {
-  formatPostApplyMismatch,
-  formatPreSendKeyMismatch,
-  formatUnreadableRefusal,
-} from "../confidential-refusals.js";
+import { formatCopyCorrectionNotice, formatPostApplyMismatch } from "../confidential-refusals.js";
 import { NETWORK_FEE_LINE } from "../announcements.js";
-import {
-  readConfidentialTransferAccount,
-  type ConfidentialTransferAccountExtension,
-} from "../confidential-account.js";
-import {
-  decryptDecryptableBalance,
-  encryptDecryptableBalance,
-} from "../confidential-balance.js";
-import { formatDdcAmount, parseDdcAmount } from "../amount.js";
-import { assembleShieldTransaction } from "../tx/shield-tx.js";
+import { DDC_DECIMALS, formatDdcAmount, parseDdcAmount } from "../amount.js";
 import { broadcastAndConfirm } from "../tx/broadcast.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
+import { prepareShield, sendShield } from "../holder/shield.js";
+import type { HolderRefusalReason } from "../holder/refusal.js";
+import { withRefusalText } from "../holder-refusal-text.js";
 
 export const SHIELD_USAGE =
   "shield: usage — shield <amount> --keypair <path> --rpc-url <url>";
@@ -83,9 +64,6 @@ export const SHIELD_USAGE =
 /** The operation phrase requireStatedCluster names in its refusal. */
 export const SHIELD_OPERATION =
   "shielding into your confidential balance (a signed, fee-paying transaction)";
-
-/** Named so the reader's return type stays on one line. */
-type ExtensionOrAbsent = ConfidentialTransferAccountExtension | undefined;
 
 /**
  * SHAPE: exactly one positional, parsed through
@@ -242,156 +220,85 @@ export async function runShield(argv: string[]): Promise<CommandOutcome> {
 
   const identity = requireWalletIdentity(config);
   const signer = await loadSignerFromFile(identity.keypairPath);
-
-  const [tokenAccount] = await findAssociatedTokenPda({
-    owner: signer.address,
-    tokenProgram: TOKEN_2022_PROGRAM,
-    mint: config.mint,
-  });
-
   const rpc = createRpc(config.rpcUrl);
-  const readAccount = async () =>
-    decodeToken(
-      await fetchEncodedAccount(rpc, tokenAccount, {
-        commitment: config.commitment,
-      }),
-    );
+  const ctx = { rpc, commitment: config.commitment, mint: config.mint, decimals: DDC_DECIMALS };
 
-  // BLOCKHASH BEFORE THE ACCOUNT READ: one fewer round trip
-  // between the counter this command reads and the counter the network sees.
-  const { value: blockhash } = await rpc
-    .getLatestBlockhash({ commitment: config.commitment })
-    .send();
-
-  const account = await readAccount();
-  const extension: ExtensionOrAbsent = readConfidentialTransferAccount(account);
-  if (extension === undefined) {
-    console.log(SHIELD_UNCONFIGURED_STOP);
-    return EXIT_NOT_DONE;
-  }
-  const publicBaseUnits = account.exists ? account.data.amount : 0n;
-  const creditsAtRead = extension.pendingBalanceCreditCounter;
-  const cap = extension.maximumPendingBalanceCreditCounter;
-
-  // AT-CAP, THEN PENDING, THEN SUFFICIENCY; the cap
-  // check is on the EXACT cap. Neither of the first two needs a key.
-  if (creditsAtRead >= cap) {
-    throw new Error(formatAtCapRefusal({ count: creditsAtRead, cap }));
-  }
-  if (creditsAtRead !== 0n) {
-    throw new Error(formatPendingPresentRefusal(creditsAtRead));
-  }
-  if (amountBaseUnits > publicBaseUnits) {
-    throw new Error(formatInsufficientPublicRefusal({ amountBaseUnits, publicBaseUnits }));
-  }
-
-  // DERIVE — only here is the wallet asked, once.
-  const keys = await deriveConfidentialKeys({
-    signer,
-  });
-  const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
-  if (derived !== extension.elgamalPubkey) {
-    throw new Error(
-      formatPreSendKeyMismatch({
-        onChainKey: extension.elgamalPubkey,
-        derivedKey: derived,
-      }),
-    );
-  }
-
-  const confidential = decryptDecryptableBalance(
-    new Uint8Array(keys.aeKey),
-    new Uint8Array(extension.decryptableAvailableBalance),
-  );
-  if (!confidential.readable) {
-    throw new Error(formatUnreadableRefusal("confidential"));
-  }
-
-  // THE ARITHMETIC: available + amount, pending being zero — see the header.
-  const confidentialAfter = confidential.baseUnits + amountBaseUnits;
-  const newDecryptableAvailableBalance = encryptDecryptableBalance(
-    new Uint8Array(keys.aeKey),
-    confidentialAfter,
-  );
-
-  // THE SECOND COUNTER READ, immediately before the
-  // announcement. The counter as read is zero, so any movement is a credit.
-  const atSend = readConfidentialTransferAccount(await readAccount());
-  if (atSend === undefined) {
-    throw new Error(
-      `token account ${tokenAccount} stopped reporting a ConfidentialTransferAccount extension between this command's two reads. Nothing was sent and no fee was paid.`,
-    );
-  }
-  if (atSend.pendingBalanceCreditCounter !== creditsAtRead) {
-    throw new Error(
-      formatShieldCounterMovedRefusal({
-        atRead: creditsAtRead,
-        atSend: atSend.pendingBalanceCreditCounter,
-      }),
-    );
-  }
-
-  console.log(
-    formatShieldAnnouncement({
-      amountBaseUnits,
-      confidentialAfterBaseUnits: confidentialAfter,
-      cluster: config.rpcUrl,
-      clusterSource: config.source.rpcUrl,
-    }),
-  );
-
-  // ONE SIGNER, knowingly temporary. The assembler adds the one
-  // credit its own Deposit creates to the counter AS READ.
-  const { transaction, tokenAccount: assembledFor } = await assembleShieldTransaction({
-    signer,
-    mint: config.mint,
-    amountBaseUnits,
-    newDecryptableAvailableBalance,
-    pendingBalanceCreditCounterAtRead: creditsAtRead,
-    blockhash,
-  });
-  if (assembledFor !== tokenAccount) {
-    throw new Error(
-      `token account derived twice and differs: ${tokenAccount} here, ${assembledFor} in the assembly — nothing was sent`,
-    );
-  }
-  assertIsFullySignedTransaction(transaction); // single signer ⇒ fully signed
-
-  const signature = await broadcastAndConfirm(
-    rpc,
-    getBase64EncodedWireTransaction(transaction),
-    config.commitment,
-    "SHIELD",
-  );
-
-  // POST-SEND READ-BACK: EXPECTED against ACTUAL off one decode.
-  // The chain compares neither; a difference means
-  // a credit landed between this command's read and execution, and the copy
-  // just written is short.
-  const after = readConfidentialTransferAccount(await readAccount());
-  if (after === undefined) {
-    throw new Error(
-      `SHIELD: the network confirmed signature ${signature}, but token account ${tokenAccount} no longer reports a ConfidentialTransferAccount extension. Most likely a stale or lagging RPC read. Re-read from a second RPC endpoint before doing anything else, and do NOT repeat this command until you have.`,
-    );
-  }
-  if (
-    after.expectedPendingBalanceCreditCounter !==
-    after.actualPendingBalanceCreditCounter
-  ) {
+  return withRefusalText(async () => {
+    const plan = await prepareShield(ctx, { signer, amountBaseUnits });
+    if (plan.kind === "not-activated") {
+      console.log(SHIELD_UNCONFIGURED_STOP);
+      return EXIT_NOT_DONE;
+    }
+    if (plan.correctionBaseUnits > 0n) {
+      console.log(formatCopyCorrectionNotice(plan.correctionBaseUnits));
+    }
+    // THE SEND-TIME CHECK runs first inside sendShield; the announcement is
+    // printed only once it passes, as the last thing before the send.
+    const { signature, readBack } = await sendShield(ctx, plan, {
+      signer,
+      afterCheck: () =>
+        console.log(
+          formatShieldAnnouncement({
+            amountBaseUnits,
+            confidentialAfterBaseUnits: plan.confidentialAfterBaseUnits,
+            cluster: config.rpcDisplay,
+            clusterSource: config.source.rpcUrl,
+          }),
+        ),
+      submit: (wire) => broadcastAndConfirm(rpc, wire, config.commitment, "SHIELD"),
+    });
+    if (readBack.kind === "mismatch") {
+      console.log(
+        formatPostApplyMismatch({
+          expected: readBack.expected,
+          actual: readBack.actual,
+          check: readBack.check,
+          command: "shield",
+        }),
+      );
+      return;
+    }
     console.log(
-      formatPostApplyMismatch({
-        expected: after.expectedPendingBalanceCreditCounter,
-        actual: after.actualPendingBalanceCreditCounter,
-        command: "shield",
+      formatShieldSuccess({
+        signature,
+        amountBaseUnits,
+        confidentialAfterBaseUnits: plan.confidentialAfterBaseUnits,
       }),
     );
-    return;
-  }
-  console.log(
-    formatShieldSuccess({
-      signature,
-      amountBaseUnits,
-      confidentialAfterBaseUnits: confidentialAfter,
-    }),
+  }, shieldRefusalText);
+}
+
+/**
+ * The available-balance refusal: the encrypted balance changed between the
+ * read the figures were computed from and the send, with the counter
+ * unchanged, as when another shield or apply-pending on this account landed
+ * in that window.
+ */
+export function formatShieldBalanceMovedRefusal(): string {
+  return (
+    "REFUSED — your confidential account changed between this command's read and its send (available balance changed). " +
+    "Cause: a confidential credit or another command on this account landed in that window. " +
+    "Risk: the balance copy this request would write was computed before it, so sending now would understate your confidential balance. Nothing was sent and no fee was paid. " +
+    "Action: run ddc shield again."
   );
+}
+
+/** The sentences `shield` words itself. */
+function shieldRefusalText(reason: HolderRefusalReason): string | undefined {
+  switch (reason.kind) {
+    case "pending-at-cap":
+      return formatAtCapRefusal({ count: reason.count, cap: reason.cap });
+    case "pending-present":
+      return formatPendingPresentRefusal(reason.credits);
+    case "insufficient-public-for-shield":
+      return formatInsufficientPublicRefusal({ amountBaseUnits: reason.amountBaseUnits, publicBaseUnits: reason.publicBaseUnits });
+    case "counter-moved":
+      return formatShieldCounterMovedRefusal({ atRead: reason.atRead, atSend: reason.atSend });
+    case "available-moved":
+      return formatShieldBalanceMovedRefusal();
+    case "extension-gone-after-send":
+      return `SHIELD: the network confirmed signature ${reason.signature}, but token account ${reason.tokenAccount} no longer reports a ConfidentialTransferAccount extension. Most likely a stale or lagging RPC read. Re-read from a second RPC endpoint before doing anything else, and do NOT repeat this command until you have.`;
+    default:
+      return undefined;
+  }
 }

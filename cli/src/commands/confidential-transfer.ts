@@ -42,17 +42,8 @@
 // from the schedule proven under.
 import { EXIT_NOT_DONE, type CommandOutcome } from "../exit-status.js";
 import { parseArgs } from "node:util";
-import {
-  assertIsFullySignedTransaction,
-  fetchEncodedAccount,
-  getAddressDecoder,
-  getAddressEncoder,
-  getBase64EncodedWireTransaction,
-  getTransactionEncoder,
-  type Address,
-  type Signature,
-} from "@solana/kit";
-import { decodeMint, decodeToken, findAssociatedTokenPda, type Mint } from "@solana-program/token-2022";
+import { getTransactionEncoder, type Address, type Signature } from "@solana/kit";
+import { type Mint } from "@solana-program/token-2022";
 import {
   formatTargetBlock,
   requireStatedCluster,
@@ -60,45 +51,29 @@ import {
   resolveConfig,
   type ConfigSource,
 } from "../config.js";
-import { createRpc, type SolanaRpc } from "../rpc.js";
+import { createRpc } from "../rpc.js";
 import { loadSignerFromFile } from "../signer.js";
-import { deriveConfidentialKeys } from "../confidential-keys.js";
-import { formatPreSendKeyMismatch, formatUnreadableRefusal } from "../confidential-refusals.js";
-import { readActivationState, readConfidentialTransferAccount } from "../confidential-account.js";
-import {
-  decryptDecryptableBalance,
-  decryptPendingBalance,
-  encryptDecryptableBalance,
-} from "../confidential-balance.js";
 import { formatFeeLine, NETWORK_FEE_LINE } from "../announcements.js";
-import { formatBelowMinimumFeeRefusal, formatSelfTransferRefusal } from "../transfer-refusals.js";
 import { parseTransferPositionals } from "../transfer-args.js";
 import { formatDdcAmount } from "../amount.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
 import {
   CONFIRM_ABORTED_BEFORE_SEND,
   promptTypedConfirm,
   TYPED_CONFIRM_QUESTION,
   type ConfirmPrompt,
 } from "../confirm-prompt.js";
-import { requireTransactionFormatActive } from "../transaction-format.js";
-import { decodeMintTransferFeeConfig } from "../mint-transfer-fee.js";
-import { decodeMintState } from "../mint-state.js";
-import { deriveMintStatePda } from "../pda.js";
-import {
-  decideScheduleHeadroom,
-  formatScheduleHeadroomRefusal,
-  NOMINAL_SLOT_MILLIS,
-  sameScheduleParameters,
-  SCHEDULE_CHANGED_IN_FLIGHT,
-  scheduleStillOnMint,
-  type EpochPosition,
-} from "../tx/schedule-headroom.js";
-import type { TransferFeeConfig, TransferFeeSchedule, TransferFeeSplit } from "../tx/transfer-fee-split.js";
-import { grossForNet } from "../tx/transfer-fee-gross.js";
-import { buildTransferProofs } from "../tx/transfer-proofs.js";
-import { assembleTransferTransaction } from "../tx/transfer-tx.js";
+import { formatTransactionFormatRefusal } from "../transaction-format.js";
+import { SCHEDULE_CHANGED_IN_FLIGHT, scheduleStillOnMint } from "../tx/schedule-headroom.js";
+import type { TransferFeeSchedule, TransferFeeSplit } from "../tx/transfer-fee-split.js";
 import { broadcastAndConfirm } from "../tx/broadcast.js";
+import {
+  prepareConfidentialTransfer,
+  readMintTransferKeys,
+  readTransferMint,
+  sendConfidentialTransfer,
+} from "../holder/confidential-transfer.js";
+import { HolderRefusal, type HolderRefusalReason } from "../holder/refusal.js";
+import { withRefusalText } from "../holder-refusal-text.js";
 
 const EM_DASH = String.fromCharCode(0x2014);
 
@@ -220,43 +195,21 @@ export function formatConfidentialTransferSuccess(input: { signature: Signature;
 
 /** The two keys a transfer binds off a decoded mint: auditor (undefined when None) and withheld-fee. */
 export function readMintConfidentialTransferKeys(mint: Mint): { auditorElgamalPubkey: Uint8Array | undefined; withdrawWithheldAuthorityElgamalPubkey: Uint8Array } {
-  const extensions = mint.extensions;
-  if (extensions.__option === "None") {
-    throw new Error("the mint carries no extensions; not a DDC mint");
-  }
-  let auditor: Uint8Array | undefined;
-  let withheld: Uint8Array | undefined;
-  let sawAuditor = false;
-  const encoder = getAddressEncoder();
-  for (const extension of extensions.value) {
-    if (extension.__kind === "ConfidentialTransferMint") {
-      sawAuditor = true;
-      auditor = extension.auditorElgamalPubkey.__option === "Some" ? new Uint8Array(encoder.encode(extension.auditorElgamalPubkey.value)) : undefined;
+  try {
+    return readMintTransferKeys(mint);
+  } catch (err) {
+    if (err instanceof HolderRefusal && err.reason.kind === "mint-extension-missing") {
+      throw new Error(mintExtensionMissingText(err.reason.extension));
     }
-    if (extension.__kind === "ConfidentialTransferFee") {
-      withheld = new Uint8Array(encoder.encode(extension.elgamalPubkey));
-    }
+    throw err;
   }
-  if (!sawAuditor) throw new Error("the mint carries no ConfidentialTransferMint extension; not a DDC mint");
-  if (withheld === undefined) throw new Error("the mint carries no ConfidentialTransferFeeConfig extension; not a DDC mint");
-  return { auditorElgamalPubkey: auditor, withdrawWithheldAuthorityElgamalPubkey: withheld };
 }
 
-/** Measured slot time from recent samples, read only when a refusal is formatted; the nominal figure on any failure. */
-async function measureSlotMillis(rpc: SolanaRpc): Promise<number> {
-  try {
-    const samples = await rpc.getRecentPerformanceSamples(5).send();
-    let slots = 0n;
-    let seconds = 0;
-    for (const s of samples) {
-      slots += BigInt(s.numSlots);
-      seconds += Number(s.samplePeriodSecs);
-    }
-    if (slots <= 0n || seconds <= 0) return NOMINAL_SLOT_MILLIS;
-    return (seconds * 1000) / Number(slots);
-  } catch {
-    return NOMINAL_SLOT_MILLIS;
-  }
+/** The sentence for a mint without an extension every mint of the reference carries. */
+function mintExtensionMissingText(extension: "any" | "ConfidentialTransferMint" | "ConfidentialTransferFeeConfig"): string {
+  return extension === "any"
+    ? "the mint carries no extensions; not a DDC mint"
+    : "the mint carries no " + extension + " extension; not a DDC mint";
 }
 
 export interface ConfidentialTransferDeps {
@@ -286,171 +239,97 @@ export async function runConfidentialTransfer(argv: string[], deps: Confidential
   requireStatedCluster(config, CONFIDENTIAL_TRANSFER_OPERATION);
   const identity = requireWalletIdentity(config);
   const signer = await loadSignerFromFile(identity.keypairPath);
-  if (recipient === signer.address) {
-    throw new Error(formatSelfTransferRefusal(recipient));
-  }
-  const [sourceToken] = await findAssociatedTokenPda({ owner: signer.address, tokenProgram: TOKEN_2022_PROGRAM, mint: config.mint });
-  const [destinationToken] = await findAssociatedTokenPda({ owner: recipient, tokenProgram: TOKEN_2022_PROGRAM, mint: config.mint });
   const rpc = createRpc(config.rpcUrl);
-  // FORMAT GATE, the first live read: network state, refused by name.
-  await requireTransactionFormatActive({ rpc, commitment: config.commitment, cluster: config.rpcUrl, operation: CONFIDENTIAL_TRANSFER_OPERATION });
-  const readToken = async (account: Address) =>
-    decodeToken(await fetchEncodedAccount(rpc, account, { commitment: config.commitment }));
-  const source = await readToken(sourceToken);
-  const state = readActivationState(source);
-  const extension = readConfidentialTransferAccount(source);
-  if (state.kind !== "configured" || extension === undefined) {
-    console.log(CONFIDENTIAL_TRANSFER_UNCONFIGURED_STOP);
-    return EXIT_NOT_DONE;
-  }
-  if (!state.approved) {
-    throw new Error(CONFIDENTIAL_TRANSFER_UNAPPROVED_STOP);
-  }
-  const keys = await deriveConfidentialKeys({ signer });
-  const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
-  if (derived !== extension.elgamalPubkey) {
-    throw new Error(formatPreSendKeyMismatch({ onChainKey: extension.elgamalPubkey, derivedKey: derived }));
-  }
-  const confidential = decryptDecryptableBalance(new Uint8Array(keys.aeKey), new Uint8Array(extension.decryptableAvailableBalance));
-  if (!confidential.readable) {
-    throw new Error(formatUnreadableRefusal("confidential"));
-  }
-  const pending = decryptPendingBalance(
-    new Uint8Array(keys.elgamalSecretKey),
-    new Uint8Array(extension.pendingBalanceLow),
-    new Uint8Array(extension.pendingBalanceHigh),
-  );
-  const pendingBaseUnits = pending.readable ? pending.baseUnits : undefined;
-  // MINT READ: one fresh fetch, decoded twice on the same bytes.
-  const readMint = async () => {
-    const encoded = await fetchEncodedAccount(rpc, config.mint, { commitment: config.commitment });
-    if (!encoded.exists) throw new Error("mint " + config.mint + " not found on cluster " + config.rpcUrl);
-    return { schedules: decodeMintTransferFeeConfig(new Uint8Array(encoded.data)), keys: readMintConfidentialTransferKeys(decodeMint(encoded).data) };
-  };
-  const readEpoch = async (): Promise<EpochPosition> => {
-    const info = await rpc.getEpochInfo({ commitment: config.commitment }).send();
-    return { epoch: BigInt(info.epoch), slotIndex: BigInt(info.slotIndex), slotsInEpoch: BigInt(info.slotsInEpoch) };
-  };
-  const refuseOnHeadroom = async (verdict: ReturnType<typeof decideScheduleHeadroom>): Promise<TransferFeeSchedule> => {
-    if (verdict.kind === "refuse") {
-      throw new Error(formatScheduleHeadroomRefusal({ slotsRemaining: verdict.slotsRemaining, slotMillis: await measureSlotMillis(rpc) }));
+  const ctx = { rpc, commitment: config.commitment, mint: config.mint, programId: config.programId };
+  return withRefusalText(async () => {
+    const plan = await prepareConfidentialTransfer(ctx, { signer, recipient, netBaseUnits });
+    if (plan.kind === "not-activated") {
+      console.log(CONFIDENTIAL_TRANSFER_UNCONFIGURED_STOP);
+      return EXIT_NOT_DONE;
     }
-    return verdict.schedule;
-  };
-  const mint = await readMint();
-  // COURTESY headroom check, before the wait of proof generation.
-  const schedule = await refuseOnHeadroom(decideScheduleHeadroom(mint.schedules, await readEpoch()));
-  const gross = grossForNet(netBaseUnits, schedule);
-  if (gross.grossBaseUnits > confidential.baseUnits) {
-    throw new Error(formatInsufficientConfidentialRefusal({ netBaseUnits, grossBaseUnits: gross.grossBaseUnits, confidentialBaseUnits: confidential.baseUnits }));
-  }
-  // PDA-1 minimum fee: client policy, refused by name.
-  const [mintStatePda] = await deriveMintStatePda(config.programId, config.mint);
-  const mintStateAccount = await fetchEncodedAccount(rpc, mintStatePda, { commitment: config.commitment });
-  if (!mintStateAccount.exists) throw new Error("PDA-1 MintState account " + mintStatePda + " not found on cluster " + config.rpcUrl);
-  const minimumFee = decodeMintState(new Uint8Array(mintStateAccount.data)).minimumFee;
-  if (gross.split.feeAmount < minimumFee) {
-    throw new Error(formatBelowMinimumFeeRefusal({ feeBaseUnits: gross.split.feeAmount, minimumFeeBaseUnits: minimumFee }));
-  }
-  // DESTINATION read.
-  const destination = await readToken(destinationToken);
-  const destinationState = readActivationState(destination);
-  const destinationExtension = readConfidentialTransferAccount(destination);
-  if (destinationState.kind !== "configured" || destinationExtension === undefined) {
-    throw new Error(formatRecipientNotActivatedRefusal(recipient));
-  }
-  if (!destinationState.approved) throw new Error(formatRecipientCannotReceiveRefusal(recipient, "unapproved"));
-  if (!destinationExtension.allowConfidentialCredits) throw new Error(formatRecipientCannotReceiveRefusal(recipient, "credits-disabled"));
-  if (destinationExtension.pendingBalanceCreditCounter >= destinationExtension.maximumPendingBalanceCreditCounter) {
-    throw new Error(formatRecipientCannotReceiveRefusal(recipient, "pending-full"));
-  }
-  const availableBalanceCiphertext = new Uint8Array(extension.availableBalance);
-  const proofs = buildTransferProofs({
-    elgamalSecretKey: new Uint8Array(keys.elgamalSecretKey),
-    availableBalanceCiphertext,
-    availableBaseUnits: confidential.baseUnits,
-    grossBaseUnits: gross.grossBaseUnits,
-    split: gross.split,
-    schedule,
-    destinationElgamalPubkey: new Uint8Array(getAddressEncoder().encode(destinationExtension.elgamalPubkey)),
-    auditorElgamalPubkey: mint.keys.auditorElgamalPubkey,
-    withdrawWithheldAuthorityElgamalPubkey: mint.keys.withdrawWithheldAuthorityElgamalPubkey,
-  });
-  const newDecryptableAvailableBalance = encryptDecryptableBalance(new Uint8Array(keys.aeKey), proofs.remainingBaseUnits);
-  console.log(
-    formatConfidentialTransferAnnouncement({
-      netBaseUnits,
-      recipient,
-      confidentialBeforeBaseUnits: confidential.baseUnits,
-      split: gross.split,
-      schedule,
-      grossBaseUnits: gross.grossBaseUnits,
-      zeroAuditorKey: proofs.zeroAuditorKey,
-      pendingBaseUnits,
-      cluster: config.rpcUrl,
-      clusterSource: config.source.rpcUrl,
-    }),
-  );
-  if (!(await promptConfirm(TYPED_CONFIRM_QUESTION))) {
-    console.log(CONFIRM_ABORTED_BEFORE_SEND);
-    return EXIT_NOT_DONE;
-  }
-  // RE-READ the source: byte equality against the ciphertext the proofs were built over.
-  const beforeSend = readConfidentialTransferAccount(await readToken(sourceToken));
-  if (beforeSend === undefined || !sameBytes(new Uint8Array(beforeSend.availableBalance), availableBalanceCiphertext)) {
-    throw new Error(formatBalanceMovedRefusal());
-  }
-  // LOAD-BEARING headroom check on a fresh mint and epoch read, and the same parameters as proven.
-  const mintAgain = await readMint();
-  const scheduleAgain = await refuseOnHeadroom(decideScheduleHeadroom(mintAgain.schedules, await readEpoch()));
-  if (!sameScheduleParameters(scheduleAgain, schedule)) {
-    throw new Error(formatScheduleMovedRefusal());
-  }
-  const blockhash = (await rpc.getLatestBlockhash({ commitment: config.commitment }).send()).value;
-  const { transaction } = await assembleTransferTransaction({
-    signer,
-    mint: config.mint,
-    recipient,
-    newDecryptableAvailableBalance,
-    proofs,
-    blockhash,
-  });
-  assertIsFullySignedTransaction(transaction);
-  console.log("TRANSFER wire size : " + getTransactionEncoder().encode(transaction).length + " bytes");
-  let signature: Signature;
-  try {
-    signature = await broadcastAndConfirm(rpc, getBase64EncodedWireTransaction(transaction), config.commitment, "TRANSFER");
-  } catch (err) {
-    console.log((err as Error).message);
-    // AFTER-MISS MAPPING BY EVIDENCE.
-    let changed = false;
-    try {
-      changed = !scheduleStillOnMint(schedule, (await readMint()).schedules);
-    } catch {
-      changed = false;
+    console.log(
+      formatConfidentialTransferAnnouncement({
+        netBaseUnits,
+        recipient,
+        confidentialBeforeBaseUnits: plan.confidentialBeforeBaseUnits,
+        split: plan.split,
+        schedule: plan.schedule,
+        grossBaseUnits: plan.grossBaseUnits,
+        zeroAuditorKey: plan.zeroAuditorKey,
+        pendingBaseUnits: plan.pendingBaseUnits,
+        cluster: config.rpcDisplay,
+        clusterSource: config.source.rpcUrl,
+      }),
+    );
+    if (!(await promptConfirm(TYPED_CONFIRM_QUESTION))) {
+      console.log(CONFIRM_ABORTED_BEFORE_SEND);
+      return EXIT_NOT_DONE;
     }
-    console.log(changed ? SCHEDULE_CHANGED_IN_FLIGHT : CONFIDENTIAL_TRANSFER_AFTER_FAILED_SEND);
-    throw err;
-  }
-  const afterExtension = readConfidentialTransferAccount(await readToken(sourceToken));
-  const afterConfidential =
-    afterExtension === undefined
-      ? { readable: false as const, reason: "the extension is gone" }
-      : decryptDecryptableBalance(new Uint8Array(keys.aeKey), new Uint8Array(afterExtension.decryptableAvailableBalance));
-  console.log(
-    formatConfidentialTransferSuccess({
-      signature,
-      netBaseUnits,
-      recipient,
-      confidentialAfterBaseUnits: afterConfidential.readable ? afterConfidential.baseUnits : proofs.remainingBaseUnits,
-    }),
-  );
+    // THE SEND-TIME CHECK runs first inside sendConfidentialTransfer (byte
+    // equality against the ciphertext the proofs were built over), then the
+    // load-bearing headroom check on a fresh mint and epoch read.
+    const result = await sendConfidentialTransfer(ctx, plan, {
+      signer,
+      beforeSubmit: (transaction) =>
+        console.log("TRANSFER wire size : " + getTransactionEncoder().encode(transaction).length + " bytes"),
+      submit: async (wire) => {
+        try {
+          return await broadcastAndConfirm(rpc, wire, config.commitment, "TRANSFER");
+        } catch (err) {
+          console.log((err as Error).message);
+          // AFTER-MISS MAPPING BY EVIDENCE.
+          let changed = false;
+          try {
+            changed = !scheduleStillOnMint(plan.schedule, (await readTransferMint(ctx)).schedules);
+          } catch {
+            changed = false;
+          }
+          console.log(changed ? SCHEDULE_CHANGED_IN_FLIGHT : CONFIDENTIAL_TRANSFER_AFTER_FAILED_SEND);
+          throw err;
+        }
+      },
+    });
+    console.log(
+      formatConfidentialTransferSuccess({
+        signature: result.signature,
+        netBaseUnits,
+        recipient,
+        confidentialAfterBaseUnits: result.confidentialAfterBaseUnits,
+      }),
+    );
+  }, confidentialTransferRefusalText(config.rpcDisplay), rpc);
 }
 
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  for (const [i, byte] of a.entries()) {
-    if (byte !== b[i]) return false;
-  }
-  return true;
+/** The sentences `confidential-transfer` words itself. */
+function confidentialTransferRefusalText(cluster: string): (reason: HolderRefusalReason) => string | undefined {
+  return (reason) => {
+    switch (reason.kind) {
+      case "transaction-format-inactive":
+        return formatTransactionFormatRefusal({ state: reason.state, cluster, operation: CONFIDENTIAL_TRANSFER_OPERATION });
+      case "account-unapproved":
+        return CONFIDENTIAL_TRANSFER_UNAPPROVED_STOP;
+      case "account-not-found":
+        return reason.account === "mint"
+          ? "mint " + reason.address + " not found on cluster " + cluster
+          : "PDA-1 MintState account " + reason.address + " not found on cluster " + cluster;
+      case "mint-extension-missing":
+        return mintExtensionMissingText(reason.extension);
+      case "insufficient-confidential-for-transfer":
+        return formatInsufficientConfidentialRefusal({
+          netBaseUnits: reason.netBaseUnits,
+          grossBaseUnits: reason.grossBaseUnits,
+          confidentialBaseUnits: reason.confidentialBaseUnits,
+        });
+      case "recipient-not-activated":
+        return formatRecipientNotActivatedRefusal(reason.recipient);
+      case "recipient-cannot-receive":
+        return formatRecipientCannotReceiveRefusal(reason.recipient, reason.why);
+      case "available-moved":
+        return formatBalanceMovedRefusal();
+      case "schedule-moved":
+        return formatScheduleMovedRefusal();
+      default:
+        return undefined;
+    }
+  };
 }

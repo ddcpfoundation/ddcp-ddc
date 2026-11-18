@@ -1,4 +1,4 @@
-// Client-side decryption of a DDC token account's confidential figures — the
+// Client-side decryption of a token account's confidential figures — the
 // reading layer `balance` displays and `shield`/`apply-pending` compute
 // from. Byte-in, figure-out: key material arrives as the raw bytes
 // deriveConfidentialKeys returns and is never logged; WASM handles are
@@ -37,7 +37,10 @@ import {
   ElGamalCiphertext,
   ElGamalSecretKey,
 } from "@solana/zk-sdk/node";
-import { subtractWithLoHiCiphertexts } from "./vendor/confidentialTransferArithmetic.js";
+import {
+  subtractAmountFromCiphertext,
+  subtractWithLoHiCiphertexts,
+} from "./vendor/confidentialTransferArithmetic.js";
 
 /** A decrypted figure, or the named reason it could not be read. */
 export type DecryptResult =
@@ -99,11 +102,12 @@ export function decryptPendingBalance(
   elgamalSecretKeyBytes: Uint8Array,
   pendingLoBytes: Uint8Array,
   pendingHiBytes: Uint8Array,
+  pendingCreditCounter: bigint = 0n,
 ): DecryptResult {
   try {
     const secret = ElGamalSecretKey.fromBytes(elgamalSecretKeyBytes);
     const lo = decryptSignedLowLimb(secret, pendingLoBytes);
-    const hi = decryptLimb(secret, pendingHiBytes, "high");
+    const hi = decryptHighLimb(secret, pendingHiBytes, pendingCreditCounter);
     const baseUnits = lo + (hi << PENDING_BALANCE_LO_BIT_LENGTH);
     if (baseUnits < 0n) {
       return {
@@ -138,6 +142,82 @@ function decryptSignedLowLimb(secret: ElGamalSecretKey, bytes: Uint8Array): bigi
       PENDING_BALANCE_LO_BIT_LENGTH,
     );
     return -decryptLimb(secret, negated, "negated low");
+  }
+}
+
+/**
+ * HIGH-LIMB WRAPS PAST THE DECRYPT WALL. The SDK's decrypt searches 32-bit
+ * plaintexts. One credit adds less than 2^32 to the high limb (its amount is
+ * under 2^48), but credits accumulate in the pending pair with no plaintext
+ * bound, so N credits can leave a high limb up to N * 2^32. When the straight
+ * read fails, the limb is read again with k * 2^32 removed, for k = 1, 2, ...:
+ * the first k that decodes is the true one, because every smaller k leaves a
+ * figure at or above 2^32. k never needs to reach the credit counter, and is
+ * capped at HIGH_LIMB_WRAP_LIMIT, which already stands for more than
+ * 18 billion whole units pending. A failure past that, a wrong key or tamper
+ * stay unreadable, as before. Each attempt is one decrypt, about 0.2 s
+ * (measured at the pinned SDK). (D-208 item 2.)
+ */
+export const HIGH_LIMB_WRAP_LIMIT = 64n;
+
+function decryptHighLimb(secret: ElGamalSecretKey, bytes: Uint8Array, pendingCreditCounter: bigint): bigint {
+  const limit = pendingCreditCounter < HIGH_LIMB_WRAP_LIMIT ? pendingCreditCounter : HIGH_LIMB_WRAP_LIMIT;
+  return decryptWide(secret, bytes, "high", limit);
+}
+
+/**
+ * A straight decrypt, then the same figure with k * 2^32 removed for
+ * k = 1 .. limit - 1; the first k that decodes is the true one. Rethrows the
+ * straight read's error when none does.
+ */
+function decryptWide(secret: ElGamalSecretKey, bytes: Uint8Array, label: string, limit: bigint): bigint {
+  try {
+    return decryptLimb(secret, bytes, label);
+  } catch (first) {
+    for (let k = 1n; k < limit; k += 1n) {
+      const shifted = k << 32n;
+      try {
+        return shifted + decryptLimb(secret, new Uint8Array(subtractAmountFromCiphertext(bytes, shifted)), label);
+      } catch {
+        // a larger k is the next candidate
+      }
+    }
+    throw first;
+  }
+}
+
+/**
+ * THE BALANCE COPY AGAINST THE BALANCE IT COPIES. The decryptable copy is
+ * written by the holder's client and nothing on chain compares it with the
+ * encrypted available balance. A credit that lands between a client's read
+ * and the execution of its apply or shield is folded into the encrypted
+ * balance and left out of the copy; so is the deposit of a second shield run
+ * at the same time. A proof built on a short copy fails. The check removes the
+ * copy's figure from the encrypted balance and reads what is left: zero is
+ * consistent, a positive figure is the amount the copy is short by. A
+ * difference past the wide decrypt, or a copy above the balance, is
+ * unreadable. (D-208 item 1.)
+ */
+export type BalanceCopyCheck =
+  | { kind: "consistent" }
+  | { kind: "short"; missingBaseUnits: bigint }
+  | { kind: "unreadable" };
+
+export function checkBalanceCopy(
+  elgamalSecretKeyBytes: Uint8Array,
+  availableBalanceBytes: Uint8Array,
+  copyBaseUnits: bigint,
+): BalanceCopyCheck {
+  try {
+    const secret = ElGamalSecretKey.fromBytes(elgamalSecretKeyBytes);
+    const difference =
+      copyBaseUnits === 0n
+        ? availableBalanceBytes
+        : new Uint8Array(subtractAmountFromCiphertext(availableBalanceBytes, copyBaseUnits));
+    const missing = decryptWide(secret, difference, "difference", HIGH_LIMB_WRAP_LIMIT);
+    return missing === 0n ? { kind: "consistent" } : { kind: "short", missingBaseUnits: missing };
+  } catch {
+    return { kind: "unreadable" };
   }
 }
 

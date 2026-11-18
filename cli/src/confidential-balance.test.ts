@@ -9,12 +9,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { AeKey, ElGamalKeypair } from "@solana/zk-sdk/node";
 import {
+  checkBalanceCopy,
   decryptDecryptableBalance,
   decryptPendingBalance,
   encryptDecryptableBalance,
   DECRYPTABLE_BALANCE_BYTES,
   DECRYPTABLE_BALANCE_MODULUS,
   PENDING_BALANCE_LO_BIT_LENGTH,
+  HIGH_LIMB_WRAP_LIMIT,
 } from "./confidential-balance.js";
 import {
   addWithLoHiCiphertexts,
@@ -169,4 +171,94 @@ test("REGRESSION: the pinned zk-sdk AES encrypt wraps past 2^64 rather than refu
       baseUnits: wrapped,
     });
   }
+});
+
+// HIGH LIMB PAST THE 32-BIT DECRYPT WALL (D-208 item 2): two credits of 2^47 leave a high limb of 2^32.
+
+function pendingPair(hi: bigint) {
+  const kp = new ElGamalKeypair();
+  const pk = kp.pubkey();
+  return {
+    secret: new Uint8Array(kp.secret().toBytes()),
+    lo: new Uint8Array(pk.encryptU64(0n).toBytes()),
+    hi: new Uint8Array(pk.encryptU64(hi).toBytes()),
+  };
+}
+
+test("decryptPendingBalance: a high limb of 2^32 after two credits reads as 2^48 base units", () => {
+  const p = pendingPair(1n << 32n);
+  assert.deepEqual(decryptPendingBalance(p.secret, p.lo, p.hi, 2n), { readable: true, baseUnits: 1n << 48n });
+});
+
+test("decryptPendingBalance: a high limb of 3 * 2^32 + 5 after four credits reads exactly", () => {
+  const p = pendingPair(3n * (1n << 32n) + 5n);
+  assert.deepEqual(decryptPendingBalance(p.secret, p.lo, p.hi, 4n), { readable: true, baseUnits: (3n * (1n << 32n) + 5n) << 16n });
+});
+
+test("decryptPendingBalance: past the wall with no counter, or a counter of one, stays unreadable", () => {
+  const p = pendingPair(1n << 32n);
+  assert.equal(decryptPendingBalance(p.secret, p.lo, p.hi).readable, false);
+  assert.equal(decryptPendingBalance(p.secret, p.lo, p.hi, 1n).readable, false);
+});
+
+test("decryptPendingBalance: a wrong key stays unreadable with the wider search", () => {
+  const p = pendingPair(1n << 32n);
+  const other = new Uint8Array(new ElGamalKeypair().secret().toBytes());
+  assert.equal(decryptPendingBalance(other, p.lo, p.hi, 3n).readable, false);
+});
+
+test("decryptPendingBalance: the wider search is capped at HIGH_LIMB_WRAP_LIMIT", () => {
+  assert.equal(HIGH_LIMB_WRAP_LIMIT, 64n);
+});
+
+// THE COPY AGAINST THE BALANCE IT COPIES (D-208 item 1). The two races, reproduced in the ciphertext arithmetic the
+// chain applies: available + (lo + hi << 16), the copy written beside it.
+
+function accountKeys() {
+  const kp = new ElGamalKeypair();
+  return { pk: kp.pubkey(), secret: new Uint8Array(kp.secret().toBytes()) };
+}
+const enc = (pk: ReturnType<ElGamalKeypair["pubkey"]>, v: bigint) => new Uint8Array(pk.encryptU64(v).toBytes());
+const LO_BITS = BigInt(PENDING_BALANCE_LO_BIT_LENGTH);
+function credit(pk: ReturnType<ElGamalKeypair["pubkey"]>, v: bigint) {
+  return { lo: enc(pk, v & 0xffffn), hi: enc(pk, v >> LO_BITS) };
+}
+
+test("checkBalanceCopy: a copy equal to the balance is consistent; a zero copy over a zero balance too", () => {
+  const { pk, secret } = accountKeys();
+  assert.deepEqual(checkBalanceCopy(secret, enc(pk, 10_000_000n), 10_000_000n), { kind: "consistent" });
+  assert.deepEqual(checkBalanceCopy(secret, enc(pk, 0n), 0n), { kind: "consistent" });
+});
+
+test("checkBalanceCopy race 1: a credit of 1 lands before a shield's apply; the copy is short by exactly 1", () => {
+  const { pk, secret } = accountKeys();
+  // available 10,000,000; pending = incoming 1 + shield deposit 1,000,000; the shield wrote 11,000,000.
+  let available = enc(pk, 10_000_000n);
+  for (const c of [credit(pk, 1n), credit(pk, 1_000_000n)]) {
+    available = new Uint8Array(addWithLoHiCiphertexts(available, c.lo, c.hi, LO_BITS));
+  }
+  assert.deepEqual(checkBalanceCopy(secret, available, 11_000_000n), { kind: "short", missingBaseUnits: 1n });
+  assert.deepEqual(checkBalanceCopy(secret, available, 11_000_001n), { kind: "consistent" });
+});
+
+test("checkBalanceCopy race 2: two shields read the same balance; the second copy omits the first deposit", () => {
+  const { pk, secret } = accountKeys();
+  let available = enc(pk, 10_000_000n);
+  for (const c of [credit(pk, 1_000_000n), credit(pk, 2_000_000n)]) {
+    available = new Uint8Array(addWithLoHiCiphertexts(available, c.lo, c.hi, LO_BITS));
+  }
+  assert.deepEqual(checkBalanceCopy(secret, available, 12_000_000n), { kind: "short", missingBaseUnits: 1_000_000n });
+});
+
+test("checkBalanceCopy: a short copy past the 32-bit wall is still measured; a copy above the balance is unreadable", () => {
+  const { pk, secret } = accountKeys();
+  const missing = (1n << 32n) + 7n;
+  assert.deepEqual(checkBalanceCopy(secret, enc(pk, 5n + missing), 5n), { kind: "short", missingBaseUnits: missing });
+  assert.deepEqual(checkBalanceCopy(secret, enc(pk, 5n), 6n), { kind: "unreadable" });
+});
+
+test("checkBalanceCopy: another key's ciphertext is unreadable, never consistent", () => {
+  const a = accountKeys();
+  const b = accountKeys();
+  assert.deepEqual(checkBalanceCopy(b.secret, enc(a.pk, 5n), 5n), { kind: "unreadable" });
 });

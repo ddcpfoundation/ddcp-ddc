@@ -90,18 +90,24 @@ export async function broadcastAndConfirm(
     console.log(
       `status poll ${i}/${STATUS_POLL_ATTEMPTS}: ${jsonWithBigints(status)}`,
     );
-    if (status?.err != null) {
+    const confirmationStatus = status?.confirmationStatus;
+    const settled =
+      confirmationStatus === "confirmed" ||
+      confirmationStatus === "finalized";
+    // AN ERROR IS FINAL ONLY WHEN SETTLED. At "processed" the result is one
+    // node's newest view and can be rolled back: a failure there may become a
+    // success on the fork that survives. So an error below "confirmed" keeps
+    // the poll going, exactly as a success does; if it never settles, the
+    // exhausted poll says the transaction may still land and must not be
+    // repeated blindly (D-208 item 3).
+    if (status?.err != null && settled) {
       const errJson = jsonWithBigints(status.err);
       throw new BroadcastFailure(
         `${label} FAILED on-chain: ${errJson} (signature ${signature})`,
         { kind: "on-chain", signature, errJson },
       );
     }
-    const confirmationStatus = status?.confirmationStatus;
-    if (
-      confirmationStatus === "confirmed" ||
-      confirmationStatus === "finalized"
-    ) {
+    if (status?.err == null && settled) {
       return signature;
     }
   }

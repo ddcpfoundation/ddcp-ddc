@@ -166,7 +166,7 @@ export async function runAdminPublishReserveStatement(
     .send();
   if (!pdaAccount) {
     throw new Error(
-      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcUrl}`,
+      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [pdaBase64] = pdaAccount.data;
@@ -191,7 +191,7 @@ export async function runAdminPublishReserveStatement(
     .send();
   if (!attestationAccount) {
     throw new Error(
-      `PDA-2 AttestationRecord account ${attestationPda} not found on cluster ${config.rpcUrl} — I-7 writes an existing account (created at I-1), it does not allocate`,
+      `PDA-2 AttestationRecord account ${attestationPda} not found on cluster ${config.rpcDisplay} — I-7 writes an existing account (created at I-1), it does not allocate`,
     );
   }
 

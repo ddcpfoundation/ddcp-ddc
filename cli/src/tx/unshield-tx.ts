@@ -39,9 +39,9 @@
 // format is a NETWORK fact the caller gates before any send
 // (transaction-format.ts); this module only assembles.
 //
-// `decimals` IS DDC_DECIMALS, SUPPLIED EXPLICITLY, cross-checked by the
-// program against the mint (MintDecimalsMismatch) — from amount.ts, never
-// constants.ts, on the shield-tx.ts reasoning.
+// `decimals` IS THE CURRENCY'S DECIMALS, SUPPLIED EXPLICITLY BY THE CALLER,
+// cross-checked by the program against the mint (MintDecimalsMismatch) — the
+// tool passes amount.ts's value, never constants.ts, on the shield-tx.ts reasoning.
 
 import {
   appendTransactionMessageInstructions,
@@ -52,7 +52,7 @@ import {
   setTransactionMessageLifetimeUsingBlockhash,
   setTransactionMessageLoadedAccountsDataSizeLimit,
   type Address,
-  type KeyPairSigner,
+  type TransactionPartialSigner,
 } from "@solana/kit";
 import {
   findAssociatedTokenPda,
@@ -62,9 +62,8 @@ import {
   getVerifyProofInstruction,
   ZkElGamalProofInstruction,
 } from "@solana-program/zk-elgamal-proof";
-import { DDC_DECIMALS } from "../amount.js";
 import { DECRYPTABLE_BALANCE_BYTES } from "../confidential-balance.js";
-import { SYSVAR_INSTRUCTIONS, TOKEN_2022_PROGRAM } from "../constants.js";
+import { SYSVAR_INSTRUCTIONS, TOKEN_2022_PROGRAM } from "../program-addresses.js";
 import type { BlockhashLifetime } from "./confidential-setup-tx.js";
 import { EQUALITY_PROOF_BYTES, RANGE_U64_PROOF_BYTES } from "./unshield-proofs.js";
 
@@ -111,8 +110,10 @@ function requireLength(bytes: Uint8Array, expected: number, what: string): void 
  * non-positive amount and on any proof or balance copy of the wrong length.
  */
 export async function assembleUnshieldTransaction(input: {
-  signer: KeyPairSigner;
+  signer: TransactionPartialSigner;
   mint: Address;
+  /** The currency's decimals, cross-checked by Token-2022 against the mint. */
+  decimals: number;
   amountBaseUnits: bigint;
   /** The 36-byte AES ciphertext of (available − amount), produced by the CALLER. */
   newDecryptableAvailableBalance: Uint8Array;
@@ -153,7 +154,7 @@ export async function assembleUnshieldTransaction(input: {
     instructionsSysvar: SYSVAR_INSTRUCTIONS,
     authority: input.signer,
     amount: input.amountBaseUnits,
-    decimals: DDC_DECIMALS,
+    decimals: input.decimals,
     newDecryptableAvailableBalance: input.newDecryptableAvailableBalance,
     equalityProofInstructionOffset,
     rangeProofInstructionOffset,

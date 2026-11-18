@@ -19,6 +19,8 @@
 // copy decision, not a refactor — it is decided first, not in this file.
 
 import type { Address, Signature } from "@solana/kit";
+import { formatDdcAmount } from "./amount.js";
+import type { BalanceCopyCheck } from "./confidential-balance.js";
 
 /** Pre-send: the account carries a key this wallet did not derive; not reconfigurable in place. */
 export function formatPreSendKeyMismatch(input: {
@@ -85,27 +87,56 @@ export function formatUnreadableRefusal(which: "pending" | "confidential"): stri
 }
 
 /**
- * Post-send: the apply confirmed, a credit
- * raced it, and the written copy understates. Printed by every command that lands an
- * ApplyPendingBalance; the HEADLINE names the command that ran and the body is shared
- * verbatim. The action line uses the register commands/balance.ts ships in
- * formatStaleWarning — no repair exists yet, the capability is later — never a repair
- * instruction. The two copies are NOT verbatim-identical: they share a REGISTER, not a
- * string, so the admission rule does not reach them. Their extraction is
- * therefore closed WITHOUT extracting: formatStaleWarning speaks of a past
- * apply the holder did not just run, this message of the one they just ran, and
- * converging the wording would make one of the two slightly wrong.
+ * Post-send: the apply or shield confirmed, and the balance copy now on the
+ * account does not match the encrypted balance. Printed by every command that
+ * lands an ApplyPendingBalance; the HEADLINE names the command that ran.
+ * apply-pending corrects a short copy (D-208 item 1). The copy now on the
+ * account may be another concurrent command's, so the cause names the copy on
+ * the account, not this request's (D-212).
  */
 export function formatPostApplyMismatch(input: {
   expected: bigint;
   actual: bigint;
+  check: Exclude<BalanceCopyCheck, { kind: "consistent" }>;
   command?: "apply-pending" | "shield";
 }): string {
   const headline = input.command === "shield" ? "SHIELD CONFIRMED" : "APPLY-PENDING CONFIRMED";
+  const counters = `(expected counter ${input.expected}, actual counter ${input.actual})`;
+  if (input.check.kind === "short") {
+    return (
+      `${headline} — but the balance copy on this account is short by ${formatDdcAmount(input.check.missingBaseUnits)} DDC. ` +
+      `Cause: a confidential credit arrived between this command's read and the network's execution, or another command on this account ran at the same time; the network folded it into the encrypted balance correctly, and the copy now on the account, written by this request or by another command that ran at the same time, was computed without it ${counters}. ` +
+      "Risk: until the copy is corrected, ddc balance shows less than you hold and confidential sends from this account are refused; nothing on-chain is wrong and no value is lost. " +
+      "Action: run ddc apply-pending. It corrects the copy, even with nothing pending."
+    );
+  }
   return (
-    `${headline} — but your displayed confidential balance may understate what you hold. ` +
-    `Cause: a confidential credit arrived between this command's read and the network's execution; the network folded it correctly, and the balance copy this request wrote was computed before it arrived (expected counter ${input.expected}, actual counter ${input.actual}). ` +
-    "Risk: ddc balance will show a figure lower than the true holding; nothing on-chain is wrong and no value is lost. Another apply pending balance request does not correct the copy — the missing amount sits in the encrypted balance this CLI cannot read. Until the copy is corrected, confidential sends from this account may be refused by the network. " +
-    "Action: no repair exists yet; correcting the figure from transaction history is a later capability. Treat the confidential figure as a lower bound until then. Shielding into this account continues to work normally. Do not repeat the request expecting a fix."
+    `${headline} — but the balance copy on this account does not match the encrypted balance, by more than this tool can read ${counters}. ` +
+    "Risk: ddc balance may not show what you hold, and confidential sends from this account are refused; nothing on-chain is wrong and no value is lost. " +
+    "Action: do not repeat the request expecting a fix. A correction needs the account's transaction history, which this tool does not read."
+  );
+}
+
+/** Pre-send, apply-pending and shield: the copy was short, and this request corrects it. */
+export function formatCopyCorrectionNotice(missingBaseUnits: bigint): string {
+  return (
+    `CORRECTION — the balance copy on this account is short by ${formatDdcAmount(missingBaseUnits)} DDC of its encrypted balance (an earlier apply or shield was raced by a credit). ` +
+    "This request also writes the corrected figure."
+  );
+}
+
+/** Pre-send, unshield and confidential-transfer: a proof built on a short copy would fail. */
+export function formatCopyShortRefusal(missingBaseUnits: bigint): string {
+  return (
+    `REFUSED — the balance copy on this account is short by ${formatDdcAmount(missingBaseUnits)} DDC of its encrypted balance, so a proof built on it would fail. ` +
+    "Run ddc apply-pending first: it corrects the copy, even with nothing pending. Nothing was sent and no fee was paid."
+  );
+}
+
+/** Pre-send, every confidential command: the difference cannot be read. */
+export function formatCopyUnreadableRefusal(): string {
+  return (
+    "REFUSED — the balance copy on this account does not match its encrypted balance, by more than this tool can read. " +
+    "A correction needs the account's transaction history, which this tool does not read. Nothing was sent and no fee was paid."
   );
 }

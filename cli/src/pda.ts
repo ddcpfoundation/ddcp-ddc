@@ -10,7 +10,7 @@ import {
   FEE_AUTHORITY_SEED,
   MINT_STATE_SEED,
   REDEMPTION_AUTHORITY_SEED,
-} from "./constants.js";
+} from "./program-addresses.js";
 
 const addressEncoder = getAddressEncoder();
 

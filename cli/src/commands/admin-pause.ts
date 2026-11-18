@@ -96,7 +96,7 @@ export async function runAdminPause(argv: string[]): Promise<void> {
     .send();
   if (!pdaAccount) {
     throw new Error(
-      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcUrl}`,
+      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [pdaBase64] = pdaAccount.data;

@@ -22,18 +22,7 @@
 import { EXIT_NOT_DONE, type CommandOutcome } from "../exit-status.js";
 import { parseArgs } from "node:util";
 import { stdin } from "node:process";
-import {
-  assertIsFullySignedTransaction,
-  fetchEncodedAccount,
-  getAddressDecoder,
-  getBase64EncodedWireTransaction,
-  getTransactionEncoder,
-  type Address,
-} from "@solana/kit";
-import {
-  decodeToken,
-  findAssociatedTokenPda,
-} from "@solana-program/token-2022";
+import { type Address } from "@solana/kit";
 import {
   formatTargetBlock,
   requireStatedCluster,
@@ -42,25 +31,18 @@ import {
 } from "../config.js";
 import { createRpc } from "../rpc.js";
 import { loadSignerFromFile } from "../signer.js";
-import { deriveConfidentialKeys } from "../confidential-keys.js";
+import { formatReadBackFailed, formatReadBackMismatch } from "../confidential-refusals.js";
+import { type ActivationState } from "../confidential-account.js";
 import {
-  formatPreSendKeyMismatch,
-  formatReadBackFailed,
-  formatReadBackMismatch,
-} from "../confidential-refusals.js";
-import {
-  readActivationState,
-  type ActivationState,
-} from "../confidential-account.js";
-import {
-  assembleConfidentialSetupTransaction,
   MAXIMUM_PENDING_BALANCE_CREDIT_COUNTER,
   PROOF_INSTRUCTION_OFFSET,
   REALLOCATE_EXTENSION_TYPES,
 } from "../tx/confidential-setup-tx.js";
+import { activateConfidentialBalances, checkActivation } from "../holder/setup-privacy.js";
+import { HolderRefusal, type HolderRefusalReason } from "../holder/refusal.js";
+import { withRefusalText } from "../holder-refusal-text.js";
 import { broadcastAndConfirm } from "../tx/broadcast.js";
 import { promptYesNo, type YesNoPrompt } from "../confirm-prompt.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
 
 /** The one value --consent accepts: it names what is consented to. */
 export const CONSENT_VALUE = "confidential-balance";
@@ -179,128 +161,75 @@ export async function runSetupPrivacy(
 
   const identity = requireWalletIdentity(config);
   const signer = await loadSignerFromFile(identity.keypairPath);
-
-  const [tokenAccount] = await findAssociatedTokenPda({
-    owner: signer.address,
-    tokenProgram: TOKEN_2022_PROGRAM,
-    mint: config.mint,
-  });
-
   const rpc = createRpc(config.rpcUrl);
-  const readState = async (): Promise<ActivationState> =>
-    readActivationState(
-      decodeToken(
-        await fetchEncodedAccount(rpc, tokenAccount, {
-          commitment: config.commitment,
-        }),
-      ),
-    );
-
-  // ACTIVATION PRE-CHECK: a configured account is never
-  // re-sent — ConfigureAccount would fail on-chain after the fee was paid.
-  const before = await readState();
-  if (before.kind === "configured") {
-    const keys = await deriveConfidentialKeys({
-      signer,
-    });
-    const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
-    console.log(
-      `ALREADY ACTIVATED — token account ${tokenAccount} carries ElGamal public key ${before.elgamalPubkey} (approved: ${before.approved})`,
-    );
-    if (derived === before.elgamalPubkey) {
+  const ctx = { rpc, commitment: config.commitment, mint: config.mint };
+  return withRefusalText(async () => {
+    // ACTIVATION PRE-CHECK: a configured account is never re-sent —
+    // ConfigureAccount would fail on-chain after the fee was paid.
+    const check = await checkActivation(ctx, signer);
+    if (check.kind === "already-activated") {
       console.log(
-        "the on-chain key MATCHES the key this wallet derives; nothing to do, nothing sent",
+        `ALREADY ACTIVATED — token account ${check.tokenAccount} carries ElGamal public key ${check.onChainKey} (approved: ${check.approved})`,
       );
-      return;
+      if (check.matches) {
+        console.log(
+          "the on-chain key MATCHES the key this wallet derives; nothing to do, nothing sent",
+        );
+        return;
+      }
+      throw new HolderRefusal({ kind: "key-mismatch", onChainKey: check.onChainKey, derivedKey: check.derivedKey });
     }
-    throw new Error(
-      formatPreSendKeyMismatch({
-        onChainKey: before.elgamalPubkey,
-        derivedKey: derived,
+
+    // CONSENT: the inspection content prints first; the flag answers the
+    // question, otherwise the y/n prompt with no default asks it.
+    console.log(
+      formatConsentBlock({
+        cluster: config.rpcDisplay,
+        wallet: signer.address,
+        tokenAccount: check.tokenAccount,
+        state: check.state,
       }),
     );
-  }
+    if (consented) {
+      console.log(
+        `consent stated on the command line (${CONSENT_FLAG}); the question is not asked`,
+      );
+    } else if (!(await prompt(CONSENT_QUESTION))) {
+      console.log(
+        "DECLINED — Confidential Balances not activated; nothing was sent, and your balance stays public. Run this command again when ready.",
+      );
+      return EXIT_NOT_DONE;
+    }
 
-  // CONSENT: the inspection content prints first; the flag
-  // answers the question, otherwise the y/n prompt with no default asks it.
-  console.log(
-    formatConsentBlock({
-      cluster: config.rpcUrl,
-      wallet: signer.address,
-      tokenAccount,
-      state: before,
-    }),
-  );
-  if (consented) {
-    console.log(
-      `consent stated on the command line (${CONSENT_FLAG}); the question is not asked`,
-    );
-  } else if (!(await prompt(CONSENT_QUESTION))) {
-    console.log(
-      "DECLINED — Confidential Balances not activated; nothing was sent, and your balance stays public. Run this command again when ready.",
-    );
-    return EXIT_NOT_DONE;
-  }
-
-  // DERIVE — only after consent: ONE wallet signature.
-  const keys = await deriveConfidentialKeys({
-    signer,
-  });
-  const derived = getAddressDecoder().decode(keys.elgamalPublicKey);
-
-  // ORDINARY blockhash — single signer, self-pay.
-  const { value: blockhash } = await rpc
-    .getLatestBlockhash({ commitment: config.commitment })
-    .send();
-  const { transaction, tokenAccount: assembledFor } =
-    await assembleConfidentialSetupTransaction({
+    // DERIVE — only after consent: ONE wallet signature.
+    const result = await activateConfidentialBalances(ctx, {
       signer,
-      mint: config.mint,
-      elgamalSecretKey: keys.elgamalSecretKey,
-      aeKey: keys.aeKey,
-      blockhash,
+      tokenAccount: check.tokenAccount,
+      beforeSubmit: ({ derivedKey, wireBytes }) => {
+        console.log(`ElGamal public key : ${derivedKey}`);
+        console.log(`wire size          : ${wireBytes} bytes`);
+      },
+      submit: (wire) => broadcastAndConfirm(rpc, wire, config.commitment, "SETUP-PRIVACY"),
+      onReadBack: (readBack) => {
+        console.log(
+          `READ BACK ${readBack.tokenAccount}: ConfidentialTransferAccount present, elgamalPubkey ${readBack.elgamalPubkey}, approved ${readBack.approved}`,
+        );
+      },
     });
-  if (assembledFor !== tokenAccount) {
-    throw new Error(
-      `token account derived twice and differs: ${tokenAccount} here, ${assembledFor} in the assembly — nothing was sent`,
+    console.log(
+      `setup-privacy complete — signature ${result.signature}; Confidential Balances is now active on ${result.tokenAccount}`,
     );
-  }
-  assertIsFullySignedTransaction(transaction); // single signer ⇒ fully signed
-  const wireBytes = getTransactionEncoder().encode(transaction).length;
-  console.log(`ElGamal public key : ${derived}`);
-  console.log(`wire size          : ${wireBytes} bytes`);
+  }, setupPrivacyRefusalText);
+}
 
-  const signature = await broadcastAndConfirm(
-    rpc,
-    getBase64EncodedWireTransaction(transaction),
-    config.commitment,
-    "SETUP-PRIVACY",
-  );
-
-  // READ BACK: written to chain, and read back.
-  const after = await readState();
-  if (after.kind !== "configured") {
-    throw new Error(
-      formatReadBackFailed({
-        signature,
-        tokenAccount,
-        stateKind: after.kind,
-      }),
-    );
+/** The read-back sentences `setup-privacy` has always printed. */
+function setupPrivacyRefusalText(reason: HolderRefusalReason): string | undefined {
+  switch (reason.kind) {
+    case "activation-read-back-failed":
+      return formatReadBackFailed({ signature: reason.signature, tokenAccount: reason.tokenAccount, stateKind: reason.stateKind });
+    case "activation-read-back-mismatch":
+      return formatReadBackMismatch({ onChainKey: reason.onChainKey, derivedKey: reason.derivedKey, signature: reason.signature });
+    default:
+      return undefined;
   }
-  console.log(
-    `READ BACK ${tokenAccount}: ConfidentialTransferAccount present, elgamalPubkey ${after.elgamalPubkey}, approved ${after.approved}`,
-  );
-  if (after.elgamalPubkey !== derived) {
-    throw new Error(
-      formatReadBackMismatch({
-        onChainKey: after.elgamalPubkey,
-        derivedKey: derived,
-        signature,
-      }),
-    );
-  }
-  console.log(
-    `setup-privacy complete — signature ${signature}; Confidential Balances is now active on ${tokenAccount}`,
-  );
 }

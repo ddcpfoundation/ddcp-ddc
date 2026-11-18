@@ -1,4 +1,4 @@
-// Public transfer transaction assembly -- the TWO-instruction path that moves a
+// Public transfer transaction assembly -- the path that moves a
 // stated amount from the sender's PUBLIC balance to the recipient's PUBLIC
 // balance, with the fee carved out on the recipient's side. Ordinary blockhash,
 // single signer, self-pay.
@@ -23,13 +23,14 @@
 // is PUBLIC_TRANSFER_AMOUNT_MAX_BASE_UNITS, the largest value the amount field
 // holds. No refusal in this module names a proof.
 //
-// THE RECIPIENT'S ACCOUNT IS CREATED IDEMPOTENTLY, ALWAYS. Instruction 0 is
-// CreateAssociatedTokenIdempotent with the SENDER as payer, so the sender pays
-// the account's one-time rent when it does not exist and the instruction is a
-// no-op when it does. Always present, never conditional: a third party
-// creating the account between the command's read and this send is then
-// harmless. The announcement's create line is driven by the command's read,
-// which is the only place that read still matters.
+// THE RECIPIENT'S ACCOUNT IS CREATED ONLY WHEN THE COMMAND READ IT AS ABSENT,
+// the same read that put the rent in the announcement. Then instruction 0 is
+// CreateAssociatedTokenIdempotent with the SENDER as payer; a third party
+// creating the account between that read and this send makes it a no-op.
+// When the account existed, no create is sent: a recipient who closes it
+// before execution makes the transfer fail atomically, for the network fee
+// only, instead of charging the sender rent that was never announced
+// (D-208 item 6).
 //
 // THE FEE ARRIVES AS A PARAMETER, COMPUTED BY THE CALLER through
 // grossForNetPublic. This module performs no fee arithmetic, exactly as
@@ -37,10 +38,10 @@
 // the announcement printed, and recomputing it here would make two sources of
 // one number.
 //
-// 'decimals' IS DDC_DECIMALS, SUPPLIED EXPLICITLY, on the shield-tx.ts rule:
-// the program cross-checks the caller's expected decimals against the mint,
-// and the value comes from amount.ts where the instrument's decimals live,
-// never from constants.ts whose values are overridable defaults.
+// 'decimals' IS THE CURRENCY'S DECIMALS, SUPPLIED EXPLICITLY BY THE CALLER, on
+// the shield-tx.ts rule: the program cross-checks the caller's expected
+// decimals against the mint, and the tool passes amount.ts's value, where the
+// instrument's decimals live, never constants.ts whose values are overridable defaults.
 //
 // ONE SIGNER, THREE ROLES: fee payer, rent payer for the recipient's account,
 // and authority of the source token account, which is its owner. No separate
@@ -52,7 +53,7 @@
 //
 // NO ComputeBudget INSTRUCTION OF ANY KIND. Neither instruction verifies a
 // proof, so no raised budget is needed, and SetComputeUnitPrice must never
-// appear in a DDC transaction.
+// appear in a transaction of this mint.
 import {
   appendTransactionMessageInstruction,
   createTransactionMessage,
@@ -61,22 +62,23 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   type Address,
-  type KeyPairSigner,
+  type TransactionPartialSigner,
 } from "@solana/kit";
 import {
   findAssociatedTokenPda,
   getCreateAssociatedTokenIdempotentInstruction,
   getTransferCheckedWithFeeInstruction,
 } from "@solana-program/token-2022";
-import { DDC_DECIMALS } from "../amount.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
+import { TOKEN_2022_PROGRAM } from "../program-addresses.js";
 import type { BlockhashLifetime } from "./confidential-setup-tx.js";
 import { PUBLIC_TRANSFER_AMOUNT_MAX_BASE_UNITS } from "./transfer-fee-split.js";
 
 export interface PublicTransferInput {
   /** Fee payer, rent payer for the recipient's account, and source authority. */
-  signer: KeyPairSigner;
+  signer: TransactionPartialSigner;
   mint: Address;
+  /** The currency's decimals, cross-checked by Token-2022 against the mint. */
+  decimals: number;
   /** The recipient's WALLET address; the token account is derived here. */
   recipient: Address;
   /** Base units debited from the sender: the net plus the fee, from grossForNetPublic. */
@@ -85,10 +87,20 @@ export interface PublicTransferInput {
   feeBaseUnits: bigint;
   /** Read live by the caller; this module performs no network access. */
   blockhash: BlockhashLifetime;
+  /**
+   * Whether to create the recipient's account, with the sender paying its
+   * rent. TRUE ONLY WHEN THE CALLER READ THE ACCOUNT AS ABSENT and announced
+   * the rent. When it existed, no create instruction is sent: a recipient who
+   * closes it before execution then makes the transfer fail atomically (the
+   * network fee only) instead of charging the sender rent that was never
+   * announced (D-208 item 6).
+   */
+  createRecipientAccount: boolean;
 }
 
 /**
- * Assemble and sign the two-instruction public transfer. Returns the
+ * Assemble and sign the public transfer: the recipient's account creation
+ * (only when asked) and the transfer. Returns the
  * pre-compile message for inspection, the signed transaction, and both
  * derived token account addresses. Throws on a non-positive gross, a gross
  * above the public bound, a negative fee, a fee above the gross, and a
@@ -133,16 +145,18 @@ export async function assemblePublicTransferTransaction(input: PublicTransferInp
     (m) => setTransactionMessageFeePayerSigner(input.signer, m),
     (m) => setTransactionMessageLifetimeUsingBlockhash(input.blockhash, m),
     (m) =>
-      appendTransactionMessageInstruction(
-        getCreateAssociatedTokenIdempotentInstruction({
-          payer: input.signer,
-          ata: destinationToken,
-          owner: input.recipient,
-          mint: input.mint,
-          tokenProgram: TOKEN_2022_PROGRAM,
-        }),
-        m,
-      ),
+      input.createRecipientAccount
+        ? appendTransactionMessageInstruction(
+            getCreateAssociatedTokenIdempotentInstruction({
+              payer: input.signer,
+              ata: destinationToken,
+              owner: input.recipient,
+              mint: input.mint,
+              tokenProgram: TOKEN_2022_PROGRAM,
+            }),
+            m,
+          )
+        : m,
     (m) =>
       appendTransactionMessageInstruction(
         getTransferCheckedWithFeeInstruction({
@@ -151,7 +165,7 @@ export async function assemblePublicTransferTransaction(input: PublicTransferInp
           destination: destinationToken,
           authority: input.signer,
           amount: input.grossBaseUnits,
-          decimals: DDC_DECIMALS,
+          decimals: input.decimals,
           fee: input.feeBaseUnits,
         }),
         m,

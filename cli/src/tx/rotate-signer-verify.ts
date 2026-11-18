@@ -12,6 +12,7 @@ import { buildRotateSignerInstruction } from "../instructions/rotate-signer.js";
 import {
   verifyAdminCountersignCore,
   type AdminIx1Descriptor,
+  type IncomingSigner,
   type SignerFrame,
 } from "./admin-verify-core.js";
 import type {
@@ -35,6 +36,7 @@ const I8_ACCOUNT_POSITION_LABELS = [
   "PDA-1 MintState",
   "operator_authority",
   "reserve_authority",
+  "new_authority",
 ] as const;
 
 /**
@@ -72,11 +74,33 @@ export function makeRotateSignerIx1Descriptor(
   };
 }
 
+/**
+ * The incoming key's slot (D-210): read from the wire's new_pubkey, the key
+ * the instruction stores, and required UNSIGNED at the incoming step
+ * (`admin countersign --incoming`) and SIGNED at the Reserve's countersign and
+ * at submit. A wire whose data is not 41 bytes yields none here; the core's
+ * length check refuses it.
+ */
+function incomingSignerOf(
+  decoded: DecodedAdminTx,
+  stage: VerifyStage,
+  incomingStep: boolean,
+): IncomingSigner | undefined {
+  const data = decoded.instructions[1]?.data;
+  if (data === undefined || data.length !== 41) return undefined;
+  return {
+    address: getAddressDecoder().decode(data.subarray(9, 41)),
+    label: "incoming key",
+    state: stage === "countersign" && incomingStep ? "unsigned" : "signed",
+  };
+}
+
 export function verifyRotateSignerCountersign(
   decoded: DecodedAdminTx,
   ctx: CountersignContext,
   operatorFrame: SignerFrame,
   stage: VerifyStage = "countersign",
+  incomingStep = false,
 ): RotateSignerVerdict {
   const verdict = verifyAdminCountersignCore(
     decoded,
@@ -84,6 +108,7 @@ export function verifyRotateSignerCountersign(
     stage,
     operatorFrame,
     makeRotateSignerIx1Descriptor(operatorFrame),
+    incomingSignerOf(decoded, stage, incomingStep),
   );
   if (!verdict.ok) return verdict;
   return {

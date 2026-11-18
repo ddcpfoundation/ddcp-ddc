@@ -2,7 +2,7 @@
 
 This file is the reference implementation's Known Limits against DDCP: for each of the fifteen [DDCP conformance criteria](https://github.com/ddcpfoundation/protocol-governance/blob/criteria-v20261008-2/CRITERIA.md), what this program and command-line tool deliver, how, and where they fall short. It describes the code in this repository as it would run in a deployment that carries value. It describes neither the protocol nor DDCP Foundation Inc. The Foundation's own deployment, on devnet, is described in the [README](README.md#the-deployed-reference-instance). A currency built using this code publishes its own Known Limits against DDCP. This file is versioned with the code; cite it by commit.
 
-**As of:** `v0.2.0`, 2026-10-24 (UTC).
+**As of:** `v0.3.0`, 2026-11-18 (UTC).
 
 Each section has up to three parts:
 
@@ -129,11 +129,12 @@ The Foundation examines this record in its own evaluation of the reference imple
 - **Delivered.**
   - Minting needs the issuer and the reserve together; fee changes need the issuer and the operator together.
   - The issuance pause can be set by any one of the three co-signers alone and lifted only by the issuer and the reserve together. It halts new minting only, and touches no holder's balance or transfer.
-  - A co-signer key is replaced only by the operator and the reserve signing together, whichever key is replaced, so the issuer can be replaced without its own signature.
+  - A co-signer key is replaced only by the operator and the reserve signing together, whichever key is replaced, and only with the signature of the key being installed. The issuer can be replaced without its own signature, and no replacement can install a key that has not signed it.
   - The arrangement for a program backing a mint that carries value is in [docs/UPGRADE_PROCEDURE.md](docs/UPGRADE_PROCEDURE.md): a time-locked multisig with member keys distinct from co-signer keys, or no authority at all after an audit.
   - `ddc state` prints every authority and its holder.
 - **Limits.**
   - **Distinct keys, not independent holders.** The code enforces three distinct co-signer keys, not three independent holders (see 9).
+  - **The operator and the reserve can replace the issuer.** Together they can install an issuer key that they control, because the key being installed need only sign. The reserve and that key can then mint. Minting therefore always needs the reserve key and one other co-signer key, and no key mints alone. The replacement comes first and is visible on chain: it changes the issuer key in the program's record, which `ddc state` prints.
   - **The upgrade authority contains every other control.** Whoever holds it can remove the ceiling check and the two-signature mint.
   - **Lost keys.**
     - Losing the issuer key stops minting, burning, the lifting of an issuance pause and fee changes until the operator and the reserve replace it.
@@ -141,6 +142,7 @@ The Foundation examines this record in its own evaluation of the reference imple
     - Losing the reserve key stops minting, burning, the lifting of a pause, reserve statements and every key replacement, so redemptions that require a burn stop too.
     - Any remaining key can still set the pause, and transfers continue in every case.
     - While a deployed program is upgradeable, an upgrade can repair what a lost key stops. Once a currency has made its program permanent, nothing can.
+  - **Versions before `v0.3.0`.** A co-signer replacement did not need the signature of the key being installed, so the operator and the reserve together could install a key nobody holds; that key then stops what a lost key stops. A deployment that runs such a version keeps this limit ([release notes](RELEASE_NOTES.md), `v0.3.0`, defect 4).
   - **Nonce accounts.** With this command-line tool, a replacement for a lost issuer key also needs a new durable-nonce account. The tool's nonce accounts are set in `cli/src/constants.ts`, and a nonce account can be handed over only by its current holder.
   - **Metadata authorities.** The genesis gives the metadata authorities, like the issuer's other authority keys, to whatever keys the mint creator names. The code provides no multi-party control over them. Once a currency carries value, the criterion is met only if the mint creator gives them to multi-party arrangements; which kind each authority accepts is in [docs/SPECIFICATION.md](docs/SPECIFICATION.md), section 3.1.
 - **Depends on.** The holder of the program's upgrade authority, named in each deployment's own specification.
@@ -149,7 +151,7 @@ The Foundation examines this record in its own evaluation of the reference imple
 
 - **Delivered.** [docs/SPECIFICATION.md](docs/SPECIFICATION.md) states every capability the program creates over a mint, who can exercise it and under what conditions. `ddc state` reads from the chain every authority, and the public half of the withheld-fee decryption key, for any mint the program created.
 - **Limits.**
-  - **Unaudited.** Before an independent audit, the code is checked with automated static-analysis tools and with adversarial tests written separately from the implementation, from its instruction list, account constraints and error codes. Neither is an audit. An audit, when published, certifies a commit of this repository; a currency proves that its own deployment matches that commit, or states its changes to it. This section is updated when a report is published.
+  - **Unaudited.** Before an independent audit, the code is checked with automated static-analysis tools and with adversarial tests written separately from the implementation, from its instruction list, account constraints and error codes. Neither is an audit. An audit, when published, covers a commit of this repository; a currency proves that its own deployment matches that commit, or states its changes to it. This section is updated when a report is published.
   - **Tested against two pinned Token-2022 builds.** The program suite runs against the Token-2022 build deployed on mainnet-beta and against the one deployed on devnet, which differ, each pinned by its SHA-256 in a record in `program/tests/fixtures/`. A later Token-2022 upgrade on either cluster is not tested until its binary is fetched again and the suite re-run ([docs/TEST_COVERAGE.md](docs/TEST_COVERAGE.md), section 7).
   - **No development history.** The published repository starts from a single snapshot commit, with no record of what was tested and rejected before it. The development history records are retained privately. The Foundation's evaluations rest on on-chain inspection, review of deployed code and the published specification, not on a development history.
   - **Holders are per deployment.** The specification describes the code. Who holds each capability is a fact about each deployment, stated in its own specification.

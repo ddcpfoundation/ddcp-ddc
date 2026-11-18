@@ -181,7 +181,7 @@ export async function runAdminCancel(argv: string[]): Promise<void> {
     .send();
   if (!pdaAccount) {
     throw new Error(
-      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcUrl}`,
+      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [pdaBase64] = pdaAccount.data;
@@ -202,7 +202,7 @@ export async function runAdminCancel(argv: string[]): Promise<void> {
     .send();
   if (!nonceInfo) {
     throw new Error(
-      `${nonceRole} nonce account ${nonceAccount} not found on cluster ${config.rpcUrl}`,
+      `${nonceRole} nonce account ${nonceAccount} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [nonceBase64] = nonceInfo.data;

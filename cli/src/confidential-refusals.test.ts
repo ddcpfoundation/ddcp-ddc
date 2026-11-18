@@ -8,6 +8,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { address, signature } from "@solana/kit";
 import {
+  formatCopyCorrectionNotice,
+  formatCopyShortRefusal,
+  formatCopyUnreadableRefusal,
   formatPostApplyMismatch,
   formatPreSendKeyMismatch,
   formatReadBackFailed,
@@ -90,25 +93,34 @@ test("formatUnreadableRefusal: REFUSED headline, the per-branch cause with no pa
   assert.doesNotMatch(confidential, /apply pending balance request/);
 });
 
-test("formatPostApplyMismatch: APPLY-PENDING CONFIRMED headline, both counters, the may-be-refused clause, and the no-repair-yet action line", () => {
-  const msg = formatPostApplyMismatch({ expected: 3n, actual: 5n });
-  assert.match(msg, /^APPLY-PENDING CONFIRMED — /);
-  assert.doesNotMatch(msg, /^APPLY CONFIRMED/);
-  assert.match(msg, /^APPLY-PENDING CONFIRMED — but your displayed confidential balance may understate what you hold\./);
-  assert.match(msg, /expected counter 3, actual counter 5/);
-  assert.match(msg, /network folded it correctly/);
+test("formatPostApplyMismatch: a short copy names the amount, both counters, and apply-pending as the correction", () => {
+  const check = { kind: "short", missingBaseUnits: 1_000_000n } as const;
+  const msg = formatPostApplyMismatch({ expected: 1n, actual: 2n, check });
+  assert.match(msg, /^APPLY-PENDING CONFIRMED — but the balance copy on this account is short by 1\.000000 DDC\./);
+  assert.match(msg, /expected counter 1, actual counter 2/);
+  assert.match(msg, /or another command on this account ran at the same time/);
+  // The copy on the account may be another command's (D-212).
+  assert.match(msg, /the copy now on the account, written by this request or by another command that ran at the same time, was computed without it \(expected counter 1, actual counter 2\)\./);
+  assert.doesNotMatch(msg, /the copy this request wrote/);
   assert.match(msg, /nothing on-chain is wrong and no value is lost/);
-  assert.match(msg, /does not correct the copy/);
-  assert.match(msg, /confidential sends from this account may be refused by the network/);
-  assert.match(msg, /no repair exists yet/);
-  assert.match(msg, /a later capability/);
-  assert.match(msg, /lower bound/);
-  assert.match(msg, /Shielding into this account continues to work normally/);
-  assert.match(msg, /Do not repeat the request expecting a fix\.$/);
-  assert.doesNotMatch(msg, /requires reconstructing/);
+  assert.match(msg, /Action: run ddc apply-pending\. It corrects the copy, even with nothing pending\.$/);
+  assert.doesNotMatch(msg, /no repair exists/);
   // The headline names the command that ran; the body is byte-identical.
-  const shield = formatPostApplyMismatch({ expected: 3n, actual: 5n, command: "shield" });
-  assert.match(shield, /^SHIELD CONFIRMED — but your displayed confidential balance may understate what you hold\./);
+  const shield = formatPostApplyMismatch({ expected: 1n, actual: 2n, check, command: "shield" });
   assert.equal(shield.slice("SHIELD CONFIRMED".length), msg.slice("APPLY-PENDING CONFIRMED".length));
-  assert.equal(formatPostApplyMismatch({ expected: 3n, actual: 5n, command: "apply-pending" }), msg);
+  assert.equal(formatPostApplyMismatch({ expected: 1n, actual: 2n, check, command: "apply-pending" }), msg);
+});
+
+test("formatPostApplyMismatch: an unreadable difference says so and does not send the holder to apply-pending", () => {
+  const msg = formatPostApplyMismatch({ expected: 1n, actual: 1n, check: { kind: "unreadable" } });
+  assert.match(msg, /by more than this tool can read/);
+  assert.match(msg, /transaction history/);
+  assert.doesNotMatch(msg, /run ddc apply-pending/);
+});
+
+test("the copy refusals and the correction notice: amount, action, and the nothing-sent clause", () => {
+  assert.match(formatCopyShortRefusal(5n), /^REFUSED — the balance copy on this account is short by 0\.000005 DDC/);
+  assert.match(formatCopyShortRefusal(5n), /Run ddc apply-pending first.*Nothing was sent and no fee was paid\.$/);
+  assert.match(formatCopyUnreadableRefusal(), /^REFUSED — .*Nothing was sent and no fee was paid\.$/);
+  assert.match(formatCopyCorrectionNotice(5n), /^CORRECTION — the balance copy on this account is short by 0\.000005 DDC.*This request also writes the corrected figure\.$/);
 });

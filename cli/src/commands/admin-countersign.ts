@@ -1,6 +1,8 @@
 // `ddc admin countersign` — the countersign half of the two-party admin
 // lifecycle, dispatching five instructions; the countersigner is the ISSUER
-// for update_transfer_fee and the Reserve for the other four. Order is
+// for update_transfer_fee and the Reserve for the other four. I-8 also
+// carries the incoming key's signature (D-210), added before the Reserve's by
+// `--incoming` with the new key's file and the role it takes. Order is
 // load-bearing: parse + confirm flags first; structural verify against LIVE
 // chain state (fresh PDA-1 + nonce reads); the typed-confirmation gate; only
 // THEN load the countersigner's key, role-guard it (retired/wrong-key
@@ -81,6 +83,62 @@ export function countersignedOutPath(inputPath: string): string {
   return inputPath.endsWith(".json")
     ? `${inputPath.slice(0, -".json".length)}-countersigned.json`
     : `${inputPath}-countersigned.json`;
+}
+
+/** Output path of the incoming key's step (D-210), beside the input. */
+export function incomingSignedOutPath(inputPath: string): string {
+  return inputPath.endsWith(".json")
+    ? `${inputPath.slice(0, -".json".length)}-incoming-signed.json`
+    : `${inputPath}-incoming-signed.json`;
+}
+
+/** The claim after the incoming key signs: the Reserve signs next. */
+export function buildIncomingSignedClaim(
+  original: AdminTxClaim,
+  incomingAddress: Address,
+): AdminTxClaim {
+  return {
+    ...original,
+    signedBy: [...original.signedBy, incomingAddress],
+    awaitingSignature: "reserve",
+  };
+}
+
+const ROLE_BY_NUMBER: readonly Role[] = ["issuer", "operator", "reserve"];
+
+/**
+ * PURE gate of the incoming key's step (D-210): the wire is an I-8 whose role
+ * is the one stated with --role, the new key has a slot of its own (not the
+ * Operator's or the Reserve's current key, whose signature already covers
+ * it), and the loaded key IS the new key. Undefined when all hold, otherwise
+ * the refusal; nothing is signed on a refusal.
+ */
+export function decideIncomingSigner(input: {
+  readonly instruction: string;
+  readonly role: number;
+  readonly newPubkey: Address;
+  readonly statedRole: Role;
+  readonly signerAddress: Address;
+  readonly liveOperator: Address;
+  readonly liveReserve: Address;
+}): string | undefined {
+  if (input.instruction !== "rotate_signer") {
+    return `--incoming applies only to rotate_signer; this envelope is ${input.instruction}`;
+  }
+  const target = ROLE_BY_NUMBER[input.role];
+  if (target === undefined) {
+    return `the transaction rotates role ${input.role}, which does not exist (roles are 0..2); the program refuses it (InvalidRole)`;
+  }
+  if (input.statedRole !== target) {
+    return `--role must be "${target}", the role the new key takes (target-role ${input.role}); got "${input.statedRole}"`;
+  }
+  if (input.newPubkey === input.liveOperator || input.newPubkey === input.liveReserve) {
+    return `the new key ${input.newPubkey} is a current co-signer key, whose signature covers its slot; skip --incoming and countersign as the Reserve`;
+  }
+  if (input.signerAddress !== input.newPubkey) {
+    return `the loaded key ${input.signerAddress} is not the new key ${input.newPubkey} this transaction installs`;
+  }
+  return undefined;
 }
 
 // Claim remains untrusted convenience data; submit re-derives from bytes.
@@ -596,6 +654,8 @@ export interface RotateSignerCountersignDecodeInput {
   liveReserve: Address;
   nonceValue: string;
   outPath: string;
+  /** True at the incoming key's own step (`--incoming`, D-210). */
+  incomingStep?: boolean;
 }
 
 /**
@@ -628,11 +688,25 @@ export function formatRotateSignerCountersignDecode(
   lines.push(
     `live operator  : ${input.liveOperator} (matched: fee payer + operator slot)`,
   );
-  lines.push(
-    `live reserve : ${input.liveReserve} (countersigner — matched: awaiting countersign slot; must equal the --keypair signer, role-guard enforced before signing)`,
-  );
+  const ownSlot =
+    input.newPubkey === input.liveOperator || input.newPubkey === input.liveReserve;
+  if (input.incomingStep === true) {
+    lines.push(
+      `incoming key   : ${input.newPubkey} (signs now — must equal the --keypair signer; the Reserve countersigns after)`,
+    );
+    lines.push(`live reserve : ${input.liveReserve} (countersigner — signs after the incoming key)`);
+  } else {
+    lines.push(
+      ownSlot
+        ? `incoming key   : ${input.newPubkey} (a current co-signer key — its signature covers its slot)`
+        : `incoming key   : ${input.newPubkey} (signed — verified before this countersignature)`,
+    );
+    lines.push(
+      `live reserve : ${input.liveReserve} (countersigner — matched: awaiting countersign slot; must equal the --keypair signer, role-guard enforced before signing)`,
+    );
+  }
   lines.push(`nonce value    : ${input.nonceValue}`);
-  lines.push(`countersigned  : ${input.outPath}`);
+  lines.push(`${input.incomingStep === true ? "incoming-signed" : "countersigned "} : ${input.outPath}`);
   return lines.join("\n");
 }
 
@@ -656,6 +730,7 @@ export async function runAdminCountersign(argv: string[]): Promise<void> {
       "confirm-min-fee": { type: "string" },
       "confirm-target-role": { type: "string" },
       "confirm-new-signer": { type: "string" },
+      incoming: { type: "boolean" },
       out: { type: "string" },
     },
     strict: false,
@@ -671,7 +746,9 @@ the required --role and confirm flags depend on the envelope's instruction:
   burn_tokens          --role reserve --confirm-amount --confirm-source
   update_transfer_fee  --role issuer  --confirm-fee-bps --confirm-max-fee --confirm-min-fee
   rotate_signer        --role reserve --confirm-target-role --confirm-new-signer
-  resume_issuance      --role reserve no confirm flags`,
+  resume_issuance      --role reserve no confirm flags
+rotate_signer also needs the new key's signature, given first: --incoming with the new key's
+--keypair and, as --role, the role it takes, plus the same two confirm flags`,
     );
   }
 
@@ -679,6 +756,7 @@ the required --role and confirm flags depend on the envelope's instruction:
   // usage block is reachable without --keypair/--role. admin-submit.ts is the
   // reference ordering. Do not move this call back above the check.
   const identity = requireSigningIdentity(config);
+  const incomingStep = values["incoming"] === true;
 
   // Raw confirm flags only — whether they are REQUIRED is decided after the
   // structural verify, keyed on the WIRE instruction (mint: amount +
@@ -751,7 +829,7 @@ the required --role and confirm flags depend on the envelope's instruction:
     .send();
   if (!pdaAccount) {
     throw new Error(
-      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcUrl}`,
+      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [pdaBase64] = pdaAccount.data;
@@ -842,7 +920,7 @@ the required --role and confirm flags depend on the envelope's instruction:
     .send();
   if (!nonceInfo) {
     throw new Error(
-      `${nonceLabel} nonce account ${wireNonceAccount} not found on cluster ${config.rpcUrl}`,
+      `${nonceLabel} nonce account ${wireNonceAccount} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [nonceBase64] = nonceInfo.data;
@@ -875,7 +953,7 @@ the required --role and confirm flags depend on the envelope's instruction:
     "countersign",
     redemptionAuthorityPda,
     { feeAuthority: feeAuthorityPda, operatorFrame },
-    { operatorFrame: rotateOperatorFrame },
+    { operatorFrame: rotateOperatorFrame, incomingStep },
   );
   if (!verdict.ok) {
     const message = `COUNTERSIGN REFUSED (structural): ${verdict.reason}`;
@@ -884,10 +962,17 @@ the required --role and confirm flags depend on the envelope's instruction:
 
   // Countersigner role is INSTRUCTION-CONDITIONAL (Decision 1), checked
   // after the wire verify: update-fee is issuer-countersigned; every other
-  // two-party instruction is Reserve-countersigned.
+  // two-party instruction is Reserve-countersigned. The incoming key's step
+  // (D-210) states the role the new key takes and is judged before signing
+  // by decideIncomingSigner instead.
   const expectedCountersignerRole: Role =
     verdict.instruction === "update_transfer_fee" ? "issuer" : "reserve";
-  if (identity.role !== expectedCountersignerRole) {
+  if (incomingStep && verdict.instruction !== "rotate_signer") {
+    throw new Error(
+      `COUNTERSIGN REFUSED (incoming): --incoming applies only to rotate_signer; this envelope is ${verdict.instruction}`,
+    );
+  }
+  if (!incomingStep && identity.role !== expectedCountersignerRole) {
     throw new Error(
       `admin countersign: --role must be "${expectedCountersignerRole}" — ${verdict.instruction}'s countersigner is the ${expectedCountersignerRole} (got "${identity.role}")`,
     );
@@ -1033,7 +1118,9 @@ the required --role and confirm flags depend on the envelope's instruction:
   const outPath =
     typeof values["out"] === "string"
       ? values["out"]
-      : countersignedOutPath(envelopePath);
+      : incomingStep
+        ? incomingSignedOutPath(envelopePath)
+        : countersignedOutPath(envelopePath);
 
   switch (verdict.instruction) {
     case "mint_tokens": {
@@ -1085,6 +1172,7 @@ the required --role and confirm flags depend on the envelope's instruction:
           liveReserve: mintState.reserve,
           nonceValue: liveNonceValue,
           outPath,
+          incomingStep,
         }),
       );
       break;
@@ -1109,6 +1197,35 @@ the required --role and confirm flags depend on the envelope's instruction:
   }
 
   const signer = await loadSignerFromFile(identity.keypairPath);
+
+  if (incomingStep && verdict.instruction === "rotate_signer") {
+    // The incoming key's step (D-210): the loaded key must BE the new key
+    // the transaction installs, for the role stated; it holds no role yet, so
+    // there is no PDA-1 authority to guard it against.
+    const refusal = decideIncomingSigner({
+      instruction: verdict.instruction,
+      role: verdict.role,
+      newPubkey: verdict.newPubkey,
+      statedRole: identity.role,
+      signerAddress: signer.address,
+      liveOperator: mintState.operator,
+      liveReserve: mintState.reserve,
+    });
+    if (refusal !== undefined) {
+      throw new Error(`COUNTERSIGN REFUSED (incoming): ${refusal}`);
+    }
+    const incomingTx = await applyReserveCountersignature(transactionBytes, signer);
+    writeFileSync(
+      outPath,
+      serializeAdminTxEnvelope(
+        incomingTx,
+        buildIncomingSignedClaim(claim, signer.address),
+        verdict.instruction,
+      ),
+    );
+    console.log(`wrote incoming-signed envelope: ${outPath} (the Reserve countersigns next)`);
+    return;
+  }
 
   // Retired/wrong-key defense: refuse BEFORE signing unless the loaded key
   // is the CURRENT on-chain authority for the instruction's countersigner

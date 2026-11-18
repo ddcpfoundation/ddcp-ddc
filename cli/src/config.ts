@@ -18,7 +18,10 @@ import type { Role } from "./role-guard.js";
 export type ConfigSource = "flag" | "file" | "default";
 
 export interface ResolvedConfig {
+  /** The address used for network access. NEVER printed: see rpcDisplay. */
   rpcUrl: string;
+  /** The address as printed: scheme and host only (displayRpcUrl). */
+  rpcDisplay: string;
   commitment: Commitment;
   programId: Address;
   mint: Address;
@@ -173,6 +176,7 @@ export function resolveConfig(argv: string[]): ResolvedConfig {
 
   return {
     rpcUrl,
+    rpcDisplay: displayRpcUrl(rpcUrl),
     commitment: COMMITMENT,
     programId,
     mint,
@@ -238,6 +242,26 @@ export function requireWalletIdentity(config: ResolvedConfig): {
 }
 
 /**
+ * The RPC address as it may be printed. Providers put access keys in the
+ * path, the query or the user-name part of the address; none of those is
+ * printed. Scheme and host are, so the operator still sees which service the
+ * command talks to; a note says when anything was left out. The full address
+ * is used for network access only.
+ */
+export function displayRpcUrl(raw: string): string {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "(an RPC address that is not a URL; not shown)";
+  }
+  const shown = `${url.protocol}//${url.host}`;
+  const hidden =
+    url.username !== "" || url.password !== "" || (url.pathname !== "/" && url.pathname !== "") || url.search !== "" || url.hash !== "";
+  return hidden ? `${shown}/...` : shown;
+}
+
+/**
  * The target-disclosure block: resolved cluster, mint and program, each
  * annotated with where the value came from. Printed at the head of the
  * inspection output of every command that signs or broadcasts, so the
@@ -246,7 +270,7 @@ export function requireWalletIdentity(config: ResolvedConfig): {
  */
 export function formatTargetBlock(config: ResolvedConfig): string {
   return [
-    `TARGET cluster : ${config.rpcUrl} (${config.source.rpcUrl})`,
+    `TARGET cluster : ${config.rpcDisplay} (${config.source.rpcUrl})`,
     `TARGET mint    : ${config.mint} (${config.source.mint})`,
     `TARGET program : ${config.programId} (${config.source.program})`,
   ].join("\n");

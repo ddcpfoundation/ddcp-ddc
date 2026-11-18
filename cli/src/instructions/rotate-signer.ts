@@ -1,5 +1,7 @@
 // I-8 rotate_signer typed instruction builder.
-// Pure and synchronous: every address arrives already resolved.
+// Pure and synchronous: every address arrives already resolved. The fifth
+// account is the incoming key, which signs the replacement that installs it
+// (D-210).
 // PDA-1 MintState is the only writable account; there is no CPI and no
 // fee/redemption authority account (contrast I-6, which CPI-signs
 // SetTransferFee over PDA-3). Mirrors instructions/update-transfer-fee.ts.
@@ -48,9 +50,10 @@ export interface RotateSignerInput {
    */
   role: number;
   /**
-   * New authority pubkey for the selected role. !=default enforced on-chain
-   * (InvalidPubkey 6004); the --confirm-new-signer exact-match gate is the
-   * client-side control.
+   * New authority pubkey for the selected role, carried twice: in the data
+   * and as the fifth account, a READONLY_SIGNER (D-210). !=default enforced
+   * on-chain (InvalidPubkey 6004); the --confirm-new-signer exact-match gate
+   * is the client-side control.
    */
   newPubkey: Address;
 }
@@ -63,11 +66,12 @@ export interface RotateSignerInstruction extends Instruction {
 /**
  * Build the I-8 rotate_signer instruction. Data is 41 bytes: discriminator
  * (8) ++ role u8 (1) ++ new_pubkey 32B (9..41); borsh field order is role
- * then new_pubkey per Sec 4.6. Accounts are exactly the four Sec 4.6 I-8
- * accounts, in order: mint READONLY (PDA-derivation seed input),
- * PDA-1 WRITABLE (the rotated authority is written directly), operatorAuthority
- * and reserveAuthority READONLY_SIGNER (Sec 4.4 2-of-2). No CPI — no PDA-3 fee
- * authority, no token-2022 program account (contrast I-6).
+ * then new_pubkey per Sec 4.6. Accounts are the five I-8 accounts, in
+ * order: mint READONLY (PDA-derivation seed input), PDA-1 WRITABLE (the
+ * rotated authority is written directly), operatorAuthority and
+ * reserveAuthority READONLY_SIGNER, and newPubkey READONLY_SIGNER, the
+ * incoming key (D-210). No CPI — no PDA-3 fee authority, no token-2022
+ * program account (contrast I-6).
  */
 export function buildRotateSignerInstruction(
   input: RotateSignerInput,
@@ -83,6 +87,7 @@ export function buildRotateSignerInstruction(
       { address: input.mintState, role: AccountRole.WRITABLE },
       { address: input.operatorAuthority, role: AccountRole.READONLY_SIGNER },
       { address: input.reserveAuthority, role: AccountRole.READONLY_SIGNER },
+      { address: input.newPubkey, role: AccountRole.READONLY_SIGNER },
     ],
     data,
   };

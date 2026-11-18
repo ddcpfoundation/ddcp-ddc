@@ -862,12 +862,20 @@ fn adv_mint_after_issuer_rotation_old_key_refused() {
         &p1,
         &c.operator.pubkey(),
         &c.reserve.pubkey(),
+        &new_issuer.pubkey(),
         rotate_args(0, new_issuer.pubkey()),
     );
-    run(&mut c.svm, &c.payer, r, &[&c.operator, &c.reserve]).unwrap();
+    run(
+        &mut c.svm,
+        &c.payer,
+        r,
+        &[&c.operator, &c.reserve, &new_issuer],
+    )
+    .unwrap();
     common::assert_custom(do_mint(&mut c, &dest, 1), E_UNAUTHORIZED);
     assert_eq!(supply(&c.svm, &mint), 0);
-    let metas = common::mint_tokens_metas(&mint, &dest, &p1, &new_issuer.pubkey(), &c.reserve.pubkey());
+    let metas =
+        common::mint_tokens_metas(&mint, &dest, &p1, &new_issuer.pubkey(), &c.reserve.pubkey());
     let i = common::mint_tokens_ix(metas, 5);
     run(&mut c.svm, &c.payer, i, &[&new_issuer, &c.reserve]).unwrap();
     assert_eq!(supply(&c.svm, &mint), 5);
@@ -1987,9 +1995,16 @@ fn adv_publish_after_reserve_rotation_old_key_refused() {
         &c.pda1,
         &c.operator.pubkey(),
         &c.reserve.pubkey(),
+        &new_reserve.pubkey(),
         rotate_args(2, new_reserve.pubkey()),
     );
-    run(&mut c.svm, &c.payer, r, &[&c.operator, &c.reserve]).unwrap();
+    run(
+        &mut c.svm,
+        &c.payer,
+        r,
+        &[&c.operator, &c.reserve, &new_reserve],
+    )
+    .unwrap();
     let i = common::publish_ix(
         &c.mint,
         &pda2,
@@ -2013,15 +2028,47 @@ fn adv_publish_after_reserve_rotation_old_key_refused() {
 }
 
 // ================================================================ I-8 rotate_signer
+//
+// Amended for D-210, after these tests were written blind: I-8 takes a fifth
+// account, the incoming key, which must sign. Each test keeps its case; where
+// the replacement succeeds or is judged for distinctness the new key is a
+// keypair that signs, and where the program refuses first its account is
+// present and unsigned. These I-8 tests are no longer blind.
 
-fn do_rotate(c: &mut Ctx, role: u8, new_pubkey: Pubkey) -> Result<(), InstructionError> {
+fn do_rotate(c: &mut Ctx, role: u8, new_key: &Keypair) -> Result<(), InstructionError> {
     let i = common::rotate_ix(
         &c.mint,
         &c.pda1,
         &c.operator.pubkey(),
         &c.reserve.pubkey(),
-        rotate_args(role, new_pubkey),
+        &new_key.pubkey(),
+        rotate_args(role, new_key.pubkey()),
     );
+    run(&mut c.svm, &c.payer, i, &[&c.operator, &c.reserve, new_key])
+}
+
+/// I-8 whose incoming key is present and does not sign: for refusals the
+/// program makes before it judges that signature.
+fn rotate_ix_unsigned_new(
+    c: &Ctx,
+    operator: &Pubkey,
+    reserve: &Pubkey,
+    pda1: &Pubkey,
+    arg_bytes: Vec<u8>,
+    new_pubkey: Pubkey,
+) -> Instruction {
+    let mut i = common::rotate_ix(&c.mint, pda1, operator, reserve, &new_pubkey, arg_bytes);
+    i.accounts[4] = AccountMeta::new_readonly(new_pubkey, false);
+    i
+}
+
+fn do_rotate_unsigned_new(
+    c: &mut Ctx,
+    role: u8,
+    new_pubkey: Pubkey,
+) -> Result<(), InstructionError> {
+    let (o, r, p) = (c.operator.pubkey(), c.reserve.pubkey(), c.pda1);
+    let i = rotate_ix_unsigned_new(c, &o, &r, &p, rotate_args(role, new_pubkey), new_pubkey);
     run(&mut c.svm, &c.payer, i, &[&c.operator, &c.reserve])
 }
 
@@ -2030,7 +2077,7 @@ fn adv_rotate_issuer_old_key_refused() {
     // Issuer rotated: old issuer cannot pause (6001); new issuer can.
     let mut c = common::setup(false);
     let new_issuer = Keypair::new();
-    do_rotate(&mut c, 0, new_issuer.pubkey()).unwrap();
+    do_rotate(&mut c, 0, &new_issuer).unwrap();
     assert_eq!(state(&c).issuer_authority, new_issuer.pubkey());
     let i = common::pause_ix(&c.mint, &c.pda1, &c.issuer.pubkey(), true);
     common::assert_custom(run(&mut c.svm, &c.payer, i, &[&c.issuer]), E_UNAUTHORIZED);
@@ -2045,21 +2092,22 @@ fn adv_rotate_operator_old_key_refused() {
     // Operator rotated: old operator + reserve rotate gets 6001; new operator + reserve succeeds.
     let mut c = common::setup(false);
     let new_operator = Keypair::new();
-    do_rotate(&mut c, 1, new_operator.pubkey()).unwrap();
+    do_rotate(&mut c, 1, &new_operator).unwrap();
     assert_eq!(state(&c).operator_authority, new_operator.pubkey());
     let before = state(&c);
-    common::assert_custom(do_rotate(&mut c, 0, Pubkey::new_unique()), E_UNAUTHORIZED);
+    common::assert_custom(do_rotate(&mut c, 0, &Keypair::new()), E_UNAUTHORIZED);
     assert_eq!(state(&c), before);
-    let k = Pubkey::new_unique();
+    let k = Keypair::new();
     let i = common::rotate_ix(
         &c.mint,
         &c.pda1,
         &new_operator.pubkey(),
         &c.reserve.pubkey(),
-        rotate_args(0, k),
+        &k.pubkey(),
+        rotate_args(0, k.pubkey()),
     );
-    run(&mut c.svm, &c.payer, i, &[&new_operator, &c.reserve]).unwrap();
-    assert_eq!(state(&c).issuer_authority, k);
+    run(&mut c.svm, &c.payer, i, &[&new_operator, &c.reserve, &k]).unwrap();
+    assert_eq!(state(&c).issuer_authority, k.pubkey());
 }
 
 #[test]
@@ -2067,7 +2115,7 @@ fn adv_rotate_reserve_old_key_cannot_resume() {
     // Reserve rotated on a paused mint: issuer + old reserve resume gets 6001; issuer + new reserve succeeds.
     let mut c = common::setup(true);
     let new_reserve = Keypair::new();
-    do_rotate(&mut c, 2, new_reserve.pubkey()).unwrap();
+    do_rotate(&mut c, 2, &new_reserve).unwrap();
     let i = common::resume_ix(&c.mint, &c.pda1, &c.issuer.pubkey(), &c.reserve.pubkey());
     common::assert_custom(
         run(&mut c.svm, &c.payer, i, &[&c.issuer, &c.reserve]),
@@ -2084,14 +2132,14 @@ fn adv_rotate_while_paused() {
     // Rotation while paused succeeds and leaves the mint paused; other fields unchanged.
     let mut c = common::setup(true);
     let before = state(&c);
-    let k = Pubkey::new_unique();
-    do_rotate(&mut c, 0, k).unwrap();
+    let k = Keypair::new();
+    do_rotate(&mut c, 0, &k).unwrap();
     let after = state(&c);
     assert!(after.pause_active);
     assert_eq!(
         after,
         MintState {
-            issuer_authority: k,
+            issuer_authority: k.pubkey(),
             ..before
         }
     );
@@ -2102,9 +2150,13 @@ fn adv_rotate_to_current_key() {
     // Each role rotated to its own current key: accepted, state unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let keys = [c.issuer.pubkey(), c.operator.pubkey(), c.reserve.pubkey()];
+    let keys = [
+        c.issuer.insecure_clone(),
+        c.operator.insecure_clone(),
+        c.reserve.insecure_clone(),
+    ];
     for (role, k) in keys.iter().enumerate() {
-        do_rotate(&mut c, role as u8, *k).unwrap();
+        do_rotate(&mut c, role as u8, k).unwrap();
     }
     assert_eq!(state(&c), before);
 }
@@ -2114,8 +2166,8 @@ fn adv_rotate_issuer_to_operator_key() {
     // Issuer set to operator's key: 6012, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let k = c.operator.pubkey();
-    common::assert_custom(do_rotate(&mut c, 0, k), E_NOT_DISTINCT);
+    let k = c.operator.insecure_clone();
+    common::assert_custom(do_rotate(&mut c, 0, &k), E_NOT_DISTINCT);
     assert_eq!(state(&c), before);
 }
 
@@ -2124,8 +2176,8 @@ fn adv_rotate_reserve_to_issuer_key() {
     // Reserve set to issuer's key: 6012, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let k = c.issuer.pubkey();
-    common::assert_custom(do_rotate(&mut c, 2, k), E_NOT_DISTINCT);
+    let k = c.issuer.insecure_clone();
+    common::assert_custom(do_rotate(&mut c, 2, &k), E_NOT_DISTINCT);
     assert_eq!(state(&c), before);
 }
 
@@ -2134,8 +2186,8 @@ fn adv_rotate_operator_to_reserve_key() {
     // Operator set to reserve's key: 6012, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let k = c.reserve.pubkey();
-    common::assert_custom(do_rotate(&mut c, 1, k), E_NOT_DISTINCT);
+    let k = c.reserve.insecure_clone();
+    common::assert_custom(do_rotate(&mut c, 1, &k), E_NOT_DISTINCT);
     assert_eq!(state(&c), before);
 }
 
@@ -2144,7 +2196,10 @@ fn adv_rotate_default_pubkey() {
     // Default new_pubkey for role 0: 6004, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    common::assert_custom(do_rotate(&mut c, 0, Pubkey::default()), E_PUBKEY);
+    common::assert_custom(
+        do_rotate_unsigned_new(&mut c, 0, Pubkey::default()),
+        E_PUBKEY,
+    );
     assert_eq!(state(&c), before);
 }
 
@@ -2153,7 +2208,10 @@ fn adv_rotate_default_pubkey_checked_before_role() {
     // Default new_pubkey with role 7: 6004 (pubkey check precedes role check).
     let mut c = common::setup(false);
     let before = state(&c);
-    common::assert_custom(do_rotate(&mut c, 7, Pubkey::default()), E_PUBKEY);
+    common::assert_custom(
+        do_rotate_unsigned_new(&mut c, 7, Pubkey::default()),
+        E_PUBKEY,
+    );
     assert_eq!(state(&c), before);
 }
 
@@ -2162,7 +2220,10 @@ fn adv_rotate_role_3() {
     // Role 3 with a valid key: 6005, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    common::assert_custom(do_rotate(&mut c, 3, Pubkey::new_unique()), E_ROLE);
+    common::assert_custom(
+        do_rotate_unsigned_new(&mut c, 3, Pubkey::new_unique()),
+        E_ROLE,
+    );
     assert_eq!(state(&c), before);
 }
 
@@ -2171,7 +2232,10 @@ fn adv_rotate_role_255() {
     // Role 255 with a valid key: 6005, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    common::assert_custom(do_rotate(&mut c, 255, Pubkey::new_unique()), E_ROLE);
+    common::assert_custom(
+        do_rotate_unsigned_new(&mut c, 255, Pubkey::new_unique()),
+        E_ROLE,
+    );
     assert_eq!(state(&c), before);
 }
 
@@ -2180,13 +2244,13 @@ fn adv_rotate_issuer_in_operator_slot() {
     // Issuer + reserve (issuer in operator slot): 6001, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let i = common::rotate_ix(
-        &c.mint,
-        &c.pda1,
-        &c.issuer.pubkey(),
-        &c.reserve.pubkey(),
-        rotate_args(0, Pubkey::new_unique()),
+    let (is, re, p, n) = (
+        c.issuer.pubkey(),
+        c.reserve.pubkey(),
+        c.pda1,
+        Pubkey::new_unique(),
     );
+    let i = rotate_ix_unsigned_new(&c, &is, &re, &p, rotate_args(0, n), n);
     common::assert_custom(
         run(&mut c.svm, &c.payer, i, &[&c.issuer, &c.reserve]),
         E_UNAUTHORIZED,
@@ -2199,13 +2263,8 @@ fn adv_rotate_operator_in_both_slots() {
     // Operator key in both operator and reserve slots: 6001, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let i = common::rotate_ix(
-        &c.mint,
-        &c.pda1,
-        &c.operator.pubkey(),
-        &c.operator.pubkey(),
-        rotate_args(2, Pubkey::new_unique()),
-    );
+    let (op, p, n) = (c.operator.pubkey(), c.pda1, Pubkey::new_unique());
+    let i = rotate_ix_unsigned_new(&c, &op, &op, &p, rotate_args(2, n), n);
     common::assert_custom(run(&mut c.svm, &c.payer, i, &[&c.operator]), E_UNAUTHORIZED);
     assert_eq!(state(&c), before);
 }
@@ -2215,13 +2274,13 @@ fn adv_rotate_reserve_not_signer() {
     // Reserve present but not signing: MissingRequiredSignature, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let mut i = common::rotate_ix(
-        &c.mint,
-        &c.pda1,
-        &c.operator.pubkey(),
-        &c.reserve.pubkey(),
-        rotate_args(0, Pubkey::new_unique()),
+    let (op, re, p, n) = (
+        c.operator.pubkey(),
+        c.reserve.pubkey(),
+        c.pda1,
+        Pubkey::new_unique(),
     );
+    let mut i = rotate_ix_unsigned_new(&c, &op, &re, &p, rotate_args(0, n), n);
     i.accounts[3] = AccountMeta::new_readonly(c.reserve.pubkey(), false);
     expect(
         run(&mut c.svm, &c.payer, i, &[&c.operator]),
@@ -2235,13 +2294,13 @@ fn adv_rotate_operator_not_signer() {
     // Operator present but not signing: MissingRequiredSignature, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let mut i = common::rotate_ix(
-        &c.mint,
-        &c.pda1,
-        &c.operator.pubkey(),
-        &c.reserve.pubkey(),
-        rotate_args(0, Pubkey::new_unique()),
+    let (op, re, p, n) = (
+        c.operator.pubkey(),
+        c.reserve.pubkey(),
+        c.pda1,
+        Pubkey::new_unique(),
     );
+    let mut i = rotate_ix_unsigned_new(&c, &op, &re, &p, rotate_args(0, n), n);
     i.accounts[2] = AccountMeta::new_readonly(c.operator.pubkey(), false);
     expect(
         run(&mut c.svm, &c.payer, i, &[&c.reserve]),
@@ -2257,13 +2316,12 @@ fn adv_rotate_noncanonical_pda1() {
     let (m, p) = (c.mint, c.pda1);
     let bad = seed_noncanonical_mint_state(&mut c.svm, &m, &p);
     let before = snapshot(&c.svm, &[bad, p]);
-    let i = common::rotate_ix(
-        &m,
-        &bad,
-        &c.operator.pubkey(),
-        &c.reserve.pubkey(),
-        rotate_args(0, Pubkey::new_unique()),
+    let (op, re, n) = (
+        c.operator.pubkey(),
+        c.reserve.pubkey(),
+        Pubkey::new_unique(),
     );
+    let i = rotate_ix_unsigned_new(&c, &op, &re, &bad, rotate_args(0, n), n);
     expect(
         run(&mut c.svm, &c.payer, i, &[&c.operator, &c.reserve]),
         InstructionError::InvalidSeeds,
@@ -2279,7 +2337,7 @@ fn adv_rotate_pda1_wrong_owner() {
     set_owner(&mut c.svm, &p, Pubkey::new_unique());
     let before = snapshot(&c.svm, &[p]);
     expect(
-        do_rotate(&mut c, 0, Pubkey::new_unique()),
+        do_rotate_unsigned_new(&mut c, 0, Pubkey::new_unique()),
         InstructionError::InvalidAccountOwner,
     );
     assert_eq!(snapshot(&c.svm, &[p]), before);
@@ -2298,13 +2356,12 @@ fn adv_rotate_pda1_of_other_mint() {
         false,
     );
     let before = snapshot(&c.svm, &[other, c.pda1]);
-    let i = common::rotate_ix(
-        &c.mint,
-        &other,
-        &c.operator.pubkey(),
-        &c.reserve.pubkey(),
-        rotate_args(0, Pubkey::new_unique()),
+    let (op, re, n) = (
+        c.operator.pubkey(),
+        c.reserve.pubkey(),
+        Pubkey::new_unique(),
     );
+    let i = rotate_ix_unsigned_new(&c, &op, &re, &other, rotate_args(0, n), n);
     expect(
         run(&mut c.svm, &c.payer, i, &[&c.operator, &c.reserve]),
         InstructionError::InvalidSeeds,
@@ -2317,9 +2374,11 @@ fn adv_rotate_trailing_byte() {
     // One trailing byte: InvalidInstructionData, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let mut data = rotate_args(0, Pubkey::new_unique());
+    let n = Pubkey::new_unique();
+    let mut data = rotate_args(0, n);
     data.push(0);
-    let i = common::rotate_ix(&c.mint, &c.pda1, &c.operator.pubkey(), &c.reserve.pubkey(), data);
+    let (op, re, p) = (c.operator.pubkey(), c.reserve.pubkey(), c.pda1);
+    let i = rotate_ix_unsigned_new(&c, &op, &re, &p, data, n);
     expect(
         run(&mut c.svm, &c.payer, i, &[&c.operator, &c.reserve]),
         InstructionError::InvalidInstructionData,
@@ -2332,9 +2391,11 @@ fn adv_rotate_short_args() {
     // Pubkey truncated by one byte: InvalidInstructionData, unchanged.
     let mut c = common::setup(false);
     let before = state(&c);
-    let mut data = rotate_args(0, Pubkey::new_unique());
+    let n = Pubkey::new_unique();
+    let mut data = rotate_args(0, n);
     data.pop();
-    let i = common::rotate_ix(&c.mint, &c.pda1, &c.operator.pubkey(), &c.reserve.pubkey(), data);
+    let (op, re, p) = (c.operator.pubkey(), c.reserve.pubkey(), c.pda1);
+    let i = rotate_ix_unsigned_new(&c, &op, &re, &p, data, n);
     expect(
         run(&mut c.svm, &c.payer, i, &[&c.operator, &c.reserve]),
         InstructionError::InvalidInstructionData,
@@ -2346,11 +2407,12 @@ fn adv_rotate_short_args() {
 fn adv_rotate_sequential_swap_refused_midway() {
     // Rotating issuer to reserve's key midway through a swap: 6012; a fresh key then succeeds.
     let mut c = common::setup(false);
-    let r = c.reserve.pubkey();
-    common::assert_custom(do_rotate(&mut c, 0, r), E_NOT_DISTINCT);
-    let k = Pubkey::new_unique();
-    do_rotate(&mut c, 0, k).unwrap();
+    let r = c.reserve.insecure_clone();
+    common::assert_custom(do_rotate(&mut c, 0, &r), E_NOT_DISTINCT);
+    let r = r.pubkey();
+    let k = Keypair::new();
+    do_rotate(&mut c, 0, &k).unwrap();
     let st = state(&c);
-    assert_eq!(st.issuer_authority, k);
+    assert_eq!(st.issuer_authority, k.pubkey());
     assert_eq!(st.reserve_authority, r);
 }

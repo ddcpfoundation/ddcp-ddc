@@ -18,8 +18,8 @@ const MINT = address("9RTSRMFRCLKHLEzyKcTEypz5R45tPUctNMLir98y1iRa");
 const MINT_STATE = address("GN8i7WtFJvrgeu9uVsS8JVsH7idzWw8La7NQf6Wn7y9B");
 const OPERATOR = address("CKJDfZ5VBVTNaY4XUuqDn8umDujHKEBWNE3qosQeVzqe");
 const RESERVE = address("Dg9YEh2Tb9qzdmutxCi36LyRx98WGLFanZPRmHdfBPez");
-// Rotation target — a real, distinct devnet address (the payer), used only
-// as the new_pubkey value; never a role signer here.
+// Rotation target — a real, distinct devnet address (the payer), used as the
+// new_pubkey value and the fifth account (D-210); never a role signer here.
 const NEW_SIGNER = address("FErEa5sWPZAPBet2HgHwvLZjrTnHzS7Ftd73YHGFGjLY");
 // The default/all-zeros pubkey ("1" x 32 base58 -> 32 zero bytes). Used ONLY
 // to pin new_pubkey placement with a known, encoder-independent hex anchor.
@@ -84,17 +84,18 @@ test("rotate_signer data round-trips: role@8, new_pubkey@9 decode back to the in
   assert.equal(getAddressDecoder().decode(ix.data.subarray(9, 41)), NEW_SIGNER);
 });
 
-test("rotate_signer accounts are the four I-8 accounts, in order, with correct roles", () => {
+test("rotate_signer accounts are the five I-8 accounts, in order, with correct roles, the new key last as a signer", () => {
   const ix = build();
-  assert.equal(ix.accounts.length, 4);
-  const [a0, a1, a2, a3] = ix.accounts;
+  assert.equal(ix.accounts.length, 5);
+  const [a0, a1, a2, a3, a4] = ix.accounts;
   if (
     a0 === undefined ||
     a1 === undefined ||
     a2 === undefined ||
-    a3 === undefined
+    a3 === undefined ||
+    a4 === undefined
   ) {
-    assert.fail("instruction must have all four accounts");
+    assert.fail("instruction must have all five accounts");
   }
   // mint: READONLY — PDA-derivation seed input, no CPI.
   assert.equal(a0.address, MINT);
@@ -108,4 +109,9 @@ test("rotate_signer accounts are the four I-8 accounts, in order, with correct r
   assert.equal(a2.role, AccountRole.READONLY_SIGNER);
   assert.equal(a3.address, RESERVE);
   assert.equal(a3.role, AccountRole.READONLY_SIGNER);
+  // The incoming key signs the replacement that installs it (D-210): it is
+  // the fifth account, a readonly signer, and the same key as the data's
+  // new_pubkey.
+  assert.equal(a4.address, NEW_SIGNER);
+  assert.equal(a4.role, AccountRole.READONLY_SIGNER);
 });

@@ -34,12 +34,18 @@ test("formatApplyHeader: the fixed example verbatim at 4, a proper singular at 1
   );
   assert.doesNotMatch(formatApplyHeader(1n), /\(s\)/);
   assert.doesNotMatch(formatApplyHeader(4n), /\(s\)/);
+  // Nothing pending is a correction only, never "folding 0" (D-212).
+  assert.equal(
+    formatApplyHeader(0n),
+    "APPLY PENDING BALANCE — nothing pending; this request writes the corrected balance copy only",
+  );
+  assert.doesNotMatch(formatApplyHeader(0n), /folding/);
 });
 
-test("APPLY_ZERO_STOP: the fixed sentence exactly — counter only, no figure, and the sent/fee clause", () => {
+test("APPLY_ZERO_STOP: the fixed sentence exactly — counter and matching copy, no figure, and the sent/fee clause", () => {
   assert.equal(
     APPLY_ZERO_STOP,
-    "Nothing to apply — pending credit counter 0. No transaction was sent and no fee was paid.",
+    "Nothing to apply — pending credit counter 0, and the balance copy matches the encrypted balance. No transaction was sent and no fee was paid.",
   );
 });
 
@@ -108,4 +114,13 @@ test("formatApplySuccess: the APPLY-PENDING CONFIRMED headline, the signature, a
   assert.match(one, /1 pending credit folded/);
   assert.match(one, /now reads 0\.000001 DDC\.$/);
   assert.doesNotMatch(one, /\(s\)/);
+  // Nothing pending: the corrected copy, never "0 pending credits" (D-212).
+  const none = formatApplySuccess({
+    signature: TEST_SIGNATURE,
+    credits: 0n,
+    confidentialAfterBaseUnits: 30_300_000n,
+  });
+  assert.match(none, /^APPLY-PENDING CONFIRMED — signature /);
+  assert.match(none, /; nothing pending was folded, and the balance copy now reads 30\.300000 DDC, matching your encrypted balance\.$/);
+  assert.doesNotMatch(none, /0 pending credit/);
 });

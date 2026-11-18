@@ -36,15 +36,7 @@
 // alert alone closes it.
 import { EXIT_NOT_DONE, type CommandOutcome } from "../exit-status.js";
 import { parseArgs } from "node:util";
-import {
-  assertIsFullySignedTransaction,
-  fetchEncodedAccount,
-  getBase64EncodedWireTransaction,
-  getTransactionEncoder,
-  type Address,
-  type Signature,
-} from "@solana/kit";
-import { decodeToken, findAssociatedTokenPda } from "@solana-program/token-2022";
+import { getTransactionEncoder, type Address, type Signature } from "@solana/kit";
 import {
   formatTargetBlock,
   requireStatedCluster,
@@ -52,37 +44,24 @@ import {
   resolveConfig,
   type ConfigSource,
 } from "../config.js";
-import { createRpc, type SolanaRpc } from "../rpc.js";
+import { createRpc } from "../rpc.js";
 import { loadSignerFromFile } from "../signer.js";
-import { readConfidentialTransferAccount } from "../confidential-account.js";
 import { formatFeeLine, NETWORK_FEE_LINE } from "../announcements.js";
-import { formatBelowMinimumFeeRefusal, formatSelfTransferRefusal } from "../transfer-refusals.js";
 import { parseTransferPositionals } from "../transfer-args.js";
-import { formatDdcAmount } from "../amount.js";
+import { DDC_DECIMALS, formatDdcAmount } from "../amount.js";
 import { formatSolAmount } from "../sol-amount.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
 import {
   CONFIRM_ABORTED_BEFORE_SEND,
   promptTypedConfirm,
   TYPED_CONFIRM_QUESTION,
   type ConfirmPrompt,
 } from "../confirm-prompt.js";
-import { decodeMintTransferFeeConfig } from "../mint-transfer-fee.js";
-import { decodeMintState } from "../mint-state.js";
-import { deriveMintStatePda } from "../pda.js";
-import {
-  decideScheduleHeadroom,
-  formatScheduleHeadroomRefusal,
-  NOMINAL_SLOT_MILLIS,
-  sameScheduleParameters,
-  SCHEDULE_CHANGED_IN_FLIGHT,
-  scheduleStillOnMint,
-  type EpochPosition,
-} from "../tx/schedule-headroom.js";
+import { SCHEDULE_CHANGED_IN_FLIGHT, scheduleStillOnMint } from "../tx/schedule-headroom.js";
 import type { TransferFeeSchedule } from "../tx/transfer-fee-split.js";
-import { grossForNetPublic } from "../tx/transfer-fee-gross.js";
-import { assemblePublicTransferTransaction } from "../tx/public-transfer-tx.js";
 import { broadcastAndConfirm } from "../tx/broadcast.js";
+import { preparePublicTransfer, readMintFeeSchedules, sendPublicTransfer } from "../holder/index.js";
+import type { HolderRefusalReason } from "../holder/refusal.js";
+import { withRefusalText } from "../holder-refusal-text.js";
 
 const EM_DASH = String.fromCharCode(0x2014);
 
@@ -102,7 +81,7 @@ export const PUBLIC_TRANSFER_OPERATION =
  * this file derives the figure from the installed package's own encoder. The
  * rent is READ at this length, never computed here.
  */
-export const NEW_RECIPIENT_ACCOUNT_BYTES = 182n;
+export { NEW_RECIPIENT_ACCOUNT_BYTES } from "../holder/public-transfer.js";
 
 /** Shape: the shared parser under this command's usage line and word. */
 export function parsePublicTransferArgs(positionals: readonly string[]): { netBaseUnits: bigint; recipient: Address } {
@@ -192,23 +171,6 @@ export function formatPublicTransferSuccess(input: { signature: Signature; netBa
   );
 }
 
-/** Measured slot time, read only when a headroom refusal is formatted; the nominal figure on any failure. */
-async function measureSlotMillis(rpc: SolanaRpc): Promise<number> {
-  try {
-    const samples = await rpc.getRecentPerformanceSamples(5).send();
-    let slots = 0n;
-    let seconds = 0;
-    for (const s of samples) {
-      slots += BigInt(s.numSlots);
-      seconds += Number(s.samplePeriodSecs);
-    }
-    if (slots <= 0n || seconds <= 0) return NOMINAL_SLOT_MILLIS;
-    return (seconds * 1000) / Number(slots);
-  } catch {
-    return NOMINAL_SLOT_MILLIS;
-  }
-}
-
 export interface PublicTransferDeps {
   /** The typed-CONFIRM gate; tests inject a stub. */
   promptConfirm?: ConfirmPrompt;
@@ -236,111 +198,81 @@ export async function runPublicTransfer(argv: string[], deps: PublicTransferDeps
   requireStatedCluster(config, PUBLIC_TRANSFER_OPERATION);
   const identity = requireWalletIdentity(config);
   const signer = await loadSignerFromFile(identity.keypairPath);
-  if (recipient === signer.address) {
-    throw new Error(formatSelfTransferRefusal(recipient));
-  }
-  const [sourceToken] = await findAssociatedTokenPda({ owner: signer.address, tokenProgram: TOKEN_2022_PROGRAM, mint: config.mint });
-  const [destinationToken] = await findAssociatedTokenPda({ owner: recipient, tokenProgram: TOKEN_2022_PROGRAM, mint: config.mint });
   const rpc = createRpc(config.rpcUrl);
-  const readToken = async (account: Address) =>
-    decodeToken(await fetchEncodedAccount(rpc, account, { commitment: config.commitment }));
-  const readSchedules = async () => {
-    const encoded = await fetchEncodedAccount(rpc, config.mint, { commitment: config.commitment });
-    if (!encoded.exists) throw new Error("mint " + config.mint + " not found on cluster " + config.rpcUrl);
-    return decodeMintTransferFeeConfig(new Uint8Array(encoded.data));
-  };
-  const readEpoch = async (): Promise<EpochPosition> => {
-    const info = await rpc.getEpochInfo({ commitment: config.commitment }).send();
-    return { epoch: BigInt(info.epoch), slotIndex: BigInt(info.slotIndex), slotsInEpoch: BigInt(info.slotsInEpoch) };
-  };
-  const refuseOnHeadroom = async (verdict: ReturnType<typeof decideScheduleHeadroom>): Promise<TransferFeeSchedule> => {
-    if (verdict.kind === "refuse") {
-      throw new Error(formatScheduleHeadroomRefusal({ slotsRemaining: verdict.slotsRemaining, slotMillis: await measureSlotMillis(rpc) }));
+  const ctx = { rpc, commitment: config.commitment, mint: config.mint, programId: config.programId, decimals: DDC_DECIMALS };
+  return withRefusalText(async () => {
+    const plan = await preparePublicTransfer(ctx, { signer, recipient, netBaseUnits });
+    console.log(
+      formatPublicTransferAnnouncement({
+        netBaseUnits,
+        recipient,
+        publicBeforeBaseUnits: plan.publicBeforeBaseUnits,
+        feeBaseUnits: plan.feeBaseUnits,
+        schedule: plan.schedule,
+        grossBaseUnits: plan.grossBaseUnits,
+        rentLamports: plan.rentLamports,
+        cluster: config.rpcDisplay,
+        clusterSource: config.source.rpcUrl,
+      }),
+    );
+    if (!(await promptConfirm(TYPED_CONFIRM_QUESTION))) {
+      console.log(CONFIRM_ABORTED_BEFORE_SEND);
+      return EXIT_NOT_DONE;
     }
-    return verdict.schedule;
-  };
-  // COURTESY headroom check, before anything is quoted.
-  const schedule = await refuseOnHeadroom(decideScheduleHeadroom(await readSchedules(), await readEpoch()));
-  // THE ONE FEE COMPUTATION: announced and sent from this result.
-  const gross = grossForNetPublic(netBaseUnits, schedule);
-  const source = await readToken(sourceToken);
-  const publicBaseUnits = source.exists ? source.data.amount : 0n;
-  if (gross.grossBaseUnits > publicBaseUnits) {
-    throw new Error(formatInsufficientPublicRefusal({ netBaseUnits, grossBaseUnits: gross.grossBaseUnits, publicBaseUnits }));
-  }
-  // PDA-1 minimum fee: client policy, applied to the public path as well.
-  const [mintStatePda] = await deriveMintStatePda(config.programId, config.mint);
-  const mintStateAccount = await fetchEncodedAccount(rpc, mintStatePda, { commitment: config.commitment });
-  if (!mintStateAccount.exists) throw new Error("PDA-1 MintState account " + mintStatePda + " not found on cluster " + config.rpcUrl);
-  const minimumFee = decodeMintState(new Uint8Array(mintStateAccount.data)).minimumFee;
-  if (gross.amounts.feeAmount < minimumFee) {
-    throw new Error(formatBelowMinimumFeeRefusal({ feeBaseUnits: gross.amounts.feeAmount, minimumFeeBaseUnits: minimumFee }));
-  }
-  // DESTINATION read: drives the create lines, and the public-credits refusal.
-  const destination = await readToken(destinationToken);
-  const destinationExtension = readConfidentialTransferAccount(destination);
-  if (destinationExtension !== undefined && !destinationExtension.allowNonConfidentialCredits) {
-    throw new Error(formatRecipientRefusesPublicRefusal(recipient));
-  }
-  // RENT, read at announcement time and only when an account will be created.
-  const rentLamports = destination.exists
-    ? undefined
-    : BigInt(await rpc.getMinimumBalanceForRentExemption(NEW_RECIPIENT_ACCOUNT_BYTES, { commitment: config.commitment }).send());
-  console.log(
-    formatPublicTransferAnnouncement({
-      netBaseUnits,
-      recipient,
-      publicBeforeBaseUnits: publicBaseUnits,
-      feeBaseUnits: gross.amounts.feeAmount,
-      schedule,
-      grossBaseUnits: gross.grossBaseUnits,
-      rentLamports,
-      cluster: config.rpcUrl,
-      clusterSource: config.source.rpcUrl,
-    }),
-  );
-  if (!(await promptConfirm(TYPED_CONFIRM_QUESTION))) {
-    console.log(CONFIRM_ABORTED_BEFORE_SEND);
-    return EXIT_NOT_DONE;
-  }
-  // LOAD-BEARING headroom check on a fresh mint and epoch read, and the same parameters as quoted.
-  const scheduleAgain = await refuseOnHeadroom(decideScheduleHeadroom(await readSchedules(), await readEpoch()));
-  if (!sameScheduleParameters(scheduleAgain, schedule)) {
-    throw new Error(formatFeeScheduleMovedDuringSend());
-  }
-  const blockhash = (await rpc.getLatestBlockhash({ commitment: config.commitment }).send()).value;
-  const { transaction } = await assemblePublicTransferTransaction({
-    signer,
-    mint: config.mint,
-    recipient,
-    grossBaseUnits: gross.grossBaseUnits,
-    feeBaseUnits: gross.amounts.feeAmount,
-    blockhash,
-  });
-  assertIsFullySignedTransaction(transaction);
-  console.log("PUBLIC TRANSFER wire size : " + getTransactionEncoder().encode(transaction).length + " bytes");
-  let signature: Signature;
-  try {
-    signature = await broadcastAndConfirm(rpc, getBase64EncodedWireTransaction(transaction), config.commitment, "PUBLIC TRANSFER");
-  } catch (err) {
-    console.log((err as Error).message);
-    // AFTER-MISS MAPPING BY EVIDENCE, as the confidential sibling maps it.
-    let changed = false;
-    try {
-      changed = !scheduleStillOnMint(schedule, await readSchedules());
-    } catch {
-      changed = false;
+    // LOAD-BEARING headroom check on a fresh mint and epoch read, and the same
+    // parameters as quoted, runs first inside sendPublicTransfer.
+    const result = await sendPublicTransfer(ctx, plan, {
+      signer,
+      beforeSubmit: (transaction) =>
+        console.log("PUBLIC TRANSFER wire size : " + getTransactionEncoder().encode(transaction).length + " bytes"),
+      submit: async (wire) => {
+        try {
+          return await broadcastAndConfirm(rpc, wire, config.commitment, "PUBLIC TRANSFER");
+        } catch (err) {
+          console.log((err as Error).message);
+          // AFTER-MISS MAPPING BY EVIDENCE, as the confidential sibling maps it.
+          let changed = false;
+          try {
+            changed = !scheduleStillOnMint(plan.schedule, await readMintFeeSchedules(ctx));
+          } catch {
+            changed = false;
+          }
+          console.log(changed ? SCHEDULE_CHANGED_IN_FLIGHT : PUBLIC_TRANSFER_AFTER_FAILED_SEND);
+          throw err;
+        }
+      },
+    });
+    console.log(
+      formatPublicTransferSuccess({
+        signature: result.signature,
+        netBaseUnits,
+        recipient,
+        publicAfterBaseUnits: result.publicAfterBaseUnits,
+      }),
+    );
+  }, publicTransferRefusalText(config.rpcDisplay), rpc);
+}
+
+/** The sentences `public-transfer` words itself. */
+function publicTransferRefusalText(cluster: string): (reason: HolderRefusalReason) => string | undefined {
+  return (reason) => {
+    switch (reason.kind) {
+      case "account-not-found":
+        return reason.account === "mint"
+          ? "mint " + reason.address + " not found on cluster " + cluster
+          : "PDA-1 MintState account " + reason.address + " not found on cluster " + cluster;
+      case "insufficient-public-for-transfer":
+        return formatInsufficientPublicRefusal({
+          netBaseUnits: reason.netBaseUnits,
+          grossBaseUnits: reason.grossBaseUnits,
+          publicBaseUnits: reason.publicBaseUnits,
+        });
+      case "recipient-refuses-public":
+        return formatRecipientRefusesPublicRefusal(reason.recipient);
+      case "schedule-moved":
+        return formatFeeScheduleMovedDuringSend();
+      default:
+        return undefined;
     }
-    console.log(changed ? SCHEDULE_CHANGED_IN_FLIGHT : PUBLIC_TRANSFER_AFTER_FAILED_SEND);
-    throw err;
-  }
-  const after = await readToken(sourceToken);
-  console.log(
-    formatPublicTransferSuccess({
-      signature,
-      netBaseUnits,
-      recipient,
-      publicAfterBaseUnits: after.exists ? after.data.amount : publicBaseUnits - gross.grossBaseUnits,
-    }),
-  );
+  };
 }

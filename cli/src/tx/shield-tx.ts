@@ -40,10 +40,10 @@
 // already holds, and the on-chain failure for it is a misleading
 // TokenError::Overflow.
 //
-// `decimals` IS DDC_DECIMALS, SUPPLIED EXPLICITLY. Deposit carries the
-// caller's expected decimals and the program cross-checks them against the
-// mint. The value comes from amount.ts, where the instrument's decimals live,
-// never from constants.ts, whose values are overridable defaults by that
+// `decimals` IS THE CURRENCY'S DECIMALS, SUPPLIED EXPLICITLY BY THE CALLER.
+// Deposit carries the caller's expected decimals and the program cross-checks
+// them against the mint. The command-line tool passes the value from amount.ts,
+// where the instrument's decimals live, never from constants.ts, whose values are overridable defaults by that
 // file's own header.
 //
 // NEAR-TWINS, ONE WORD AWAY. Upstream also exports
@@ -61,7 +61,7 @@
 //
 // NO ComputeBudget INSTRUCTION OF ANY KIND. Neither instruction verifies a
 // proof, so no raised budget is needed, and SetComputeUnitPrice must never
-// appear in a DDC transaction.
+// appear in a transaction of this mint.
 
 import {
   appendTransactionMessageInstruction,
@@ -71,16 +71,15 @@ import {
   setTransactionMessageFeePayerSigner,
   setTransactionMessageLifetimeUsingBlockhash,
   type Address,
-  type KeyPairSigner,
+  type TransactionPartialSigner,
 } from "@solana/kit";
 import {
   findAssociatedTokenPda,
   getApplyConfidentialPendingBalanceInstruction,
   getConfidentialDepositInstruction,
 } from "@solana-program/token-2022";
-import { DDC_DECIMALS } from "../amount.js";
 import { DECRYPTABLE_BALANCE_BYTES } from "../confidential-balance.js";
-import { TOKEN_2022_PROGRAM } from "../constants.js";
+import { TOKEN_2022_PROGRAM } from "../program-addresses.js";
 import type { BlockhashLifetime } from "./confidential-setup-tx.js";
 
 /**
@@ -92,8 +91,10 @@ export const MAXIMUM_DEPOSIT_TRANSFER_AMOUNT = (1n << 48n) - 1n;
 
 export interface ShieldInput {
   /** Fee payer and token-account authority. One signer, two roles. */
-  signer: KeyPairSigner;
+  signer: TransactionPartialSigner;
   mint: Address;
+  /** The currency's decimals, cross-checked by Token-2022 against the mint. */
+  decimals: number;
   /** Base units to move from public to confidential; 1 .. 2^48 - 1. */
   amountBaseUnits: bigint;
   /**
@@ -153,7 +154,7 @@ export async function assembleShieldTransaction(input: ShieldInput) {
           mint: input.mint,
           authority: input.signer,
           amount: input.amountBaseUnits,
-          decimals: DDC_DECIMALS,
+          decimals: input.decimals,
         }),
         m,
       ),

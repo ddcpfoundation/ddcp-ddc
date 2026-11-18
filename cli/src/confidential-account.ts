@@ -1,5 +1,5 @@
 // Confidential-account reading — shared by every command that looks at a
-// DDC token account's Confidential Balances state. `readActivationState`
+// token account's Confidential Balances state. `readActivationState`
 // and `ActivationState` MIGRATED here from commands/setup-privacy.ts:
 // balance, shield and apply-pending need the same reading, and importing
 // it from a command file makes one command a library of the next three —
@@ -49,7 +49,7 @@ export type ActivationState =
  * Pure over a decoded (maybe-)account: what the token account says about
  * activation. Extension 5, ConfidentialTransferAccount, present means
  * configured; the account existing without it means the ATA exists (someone
- * sent DDC to it) but has never been activated; absent means no ATA yet.
+ * sent tokens to it) but has never been activated; absent means no ATA yet.
  */
 export function readActivationState(account: MaybeAccount<Token>): ActivationState {
   if (!account.exists) return { kind: "absent" };

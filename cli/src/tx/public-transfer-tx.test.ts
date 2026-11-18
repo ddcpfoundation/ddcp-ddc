@@ -98,10 +98,12 @@ async function assembleForTest(overrides: Partial<PublicTransferInput> = {}) {
   const result = await assemblePublicTransferTransaction({
     signer,
     mint: DDC_MINT,
+    decimals: DDC_DECIMALS,
     recipient: RECIPIENT,
     grossBaseUnits: TEST_GROSS,
     feeBaseUnits: TEST_FEE,
     blockhash: TEST_BLOCKHASH,
+    createRecipientAccount: true,
     ...overrides,
   });
   const instructions = result.message.instructions as unknown as AnyInstruction[];
@@ -184,10 +186,12 @@ test("public-transfer-tx determinism: two assemblies over identical inputs produ
   const input = {
     signer,
     mint: DDC_MINT,
+    decimals: DDC_DECIMALS,
     recipient: RECIPIENT,
     grossBaseUnits: TEST_GROSS,
     feeBaseUnits: TEST_FEE,
     blockhash: TEST_BLOCKHASH,
+    createRecipientAccount: true,
   };
   const a = await assemblePublicTransferTransaction(input);
   const b = await assemblePublicTransferTransaction(input);
@@ -204,7 +208,7 @@ test("public-transfer-tx: the bound is the public one, it assembles AT the bound
   const atBound = await assembleForTest({ grossBaseUnits: PUBLIC_TRANSFER_AMOUNT_MAX_BASE_UNITS, feeBaseUnits: 0n });
   assert.equal(atBound.instructions.length, 2);
   const signer = await generateKeyPairSigner();
-  const base = { signer, mint: DDC_MINT, recipient: RECIPIENT, blockhash: TEST_BLOCKHASH };
+  const base = { signer, mint: DDC_MINT, decimals: DDC_DECIMALS, recipient: RECIPIENT, blockhash: TEST_BLOCKHASH, createRecipientAccount: true };
   const cases: Array<[bigint, bigint, RegExp]> = [
     [PUBLIC_TRANSFER_AMOUNT_MAX_BASE_UNITS + 1n, 0n, /one transfer carries at most 18446744073709551615 base units$/],
     [0n, 0n, /the amount must be at least 1 base unit$/],
@@ -232,10 +236,12 @@ test("public-transfer-tx: a recipient equal to the sender's own wallet is refuse
       assemblePublicTransferTransaction({
         signer,
         mint: DDC_MINT,
+        decimals: DDC_DECIMALS,
         recipient: signer.address,
         grossBaseUnits: TEST_GROSS,
         feeBaseUnits: TEST_FEE,
         blockhash: TEST_BLOCKHASH,
+        createRecipientAccount: true,
       }),
     (err: unknown) => {
       assert.ok(err instanceof Error);
@@ -291,4 +297,15 @@ test("public-transfer-tx: the signed wire transaction is exactly 396 bytes, 836 
   assert.equal(wire.length, WIRE_BYTES);
   assert.equal(TRANSACTION_LIMIT_BYTES - wire.length, 836);
   assert.ok(wire.length < TRANSACTION_LIMIT_BYTES);
+});
+
+// THE CREATE ONLY WHEN THE ACCOUNT WAS READ AS ABSENT (D-208 item 6).
+
+test("public-transfer-tx: with createRecipientAccount false there is no create instruction, only the transfer on Token-2022", async () => {
+  const { instructions } = await assembleForTest({ createRecipientAccount: false });
+  assert.equal(instructions.length, 1);
+  assert.equal(instructions[0]?.programAddress, TOKEN_2022);
+  assert.ok(instructions[0]?.data);
+  assert.deepEqual(new Uint8Array(instructions[0].data), GOLDEN_TRANSFER_DATA);
+  assert.ok(!instructions.some((i) => i.programAddress === ASSOCIATED_TOKEN));
 });

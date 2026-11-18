@@ -607,6 +607,7 @@ const I8_ACCOUNT_LABELS = [
   "PDA-1 MintState",
   "operator_authority",
   "reserve_authority",
+  "new_authority",
 ] as const;
 
 export interface RotateSignerSerializeDecodeInput {
@@ -665,9 +666,9 @@ export function formatRotateSignerSerializeDecode(
           ? "Reserve"
           : "unknown (rejected on-chain)";
   const ix1Accounts = ix1.accounts ?? [];
-  if (ix1Accounts.length !== 4) {
+  if (ix1Accounts.length !== 5) {
     throw new Error(
-      `instruction 1 must have 4 accounts, got ${ix1Accounts.length}`,
+      `instruction 1 must have 5 accounts, got ${ix1Accounts.length}`,
     );
   }
 
@@ -701,11 +702,32 @@ export function formatRotateSignerSerializeDecode(
         ? "operator"
         : addr === input.reserveAuthority
           ? "reserve"
-          : "signer";
+          : addr === newPubkey
+            ? "incoming"
+            : "signer";
     lines.push(`signature ${who} ${addr}: ${sig ? "FILLED" : "AWAITING"}`);
   }
+  lines.push(
+    `next           : ${rotateNextSigner(newPubkey, input.onChainOperator, input.reserveAuthority)}`,
+  );
   lines.push(`envelope file  : ${input.outPath}`);
   return lines.join("\n");
+}
+
+/**
+ * Who signs next after the Operator prepares I-8 (D-210): the incoming key
+ * first, with `admin countersign --incoming`, unless it is the Operator's or
+ * the Reserve's own current key, whose one signature covers both slots.
+ */
+export function rotateNextSigner(
+  newPubkey: Address,
+  operator: Address,
+  reserve: Address,
+): string {
+  if (newPubkey === operator || newPubkey === reserve) {
+    return "the Reserve countersigns (the new key is a current co-signer key, whose signature covers its slot)";
+  }
+  return `the incoming key ${newPubkey} signs with admin countersign --incoming, then the Reserve countersigns`;
 }
 
 /**
@@ -718,7 +740,9 @@ export function buildRotateSignerClaim(
   role: number,
   newPubkey: Address,
   feePayer: Address,
+  reserve: Address,
 ): AdminTxClaim {
+  const ownSlot = newPubkey === feePayer || newPubkey === reserve;
   return {
     amountDisplay: `rotate role ${role} -> ${newPubkey}`,
     amount: "0",
@@ -727,7 +751,7 @@ export function buildRotateSignerClaim(
     feePayer,
     initiatorRole: "operator",
     signedBy: [feePayer],
-    awaitingSignature: "reserve",
+    awaitingSignature: ownSlot ? "reserve" : "incoming",
   };
 }
 
@@ -847,7 +871,7 @@ export async function runAdminSerialize(argv: string[]): Promise<void> {
     .send();
   if (!pdaAccount) {
     throw new Error(
-      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcUrl}`,
+      `PDA-1 MintState account ${mintStatePda} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [pdaBase64] = pdaAccount.data;
@@ -881,7 +905,7 @@ export async function runAdminSerialize(argv: string[]): Promise<void> {
     .send();
   if (!nonceInfo) {
     throw new Error(
-      `${nonceLabel} nonce account ${nonceAccount} not found on cluster ${config.rpcUrl}`,
+      `${nonceLabel} nonce account ${nonceAccount} not found on cluster ${config.rpcDisplay}`,
     );
   }
   const [nonceBase64] = nonceInfo.data;
@@ -918,7 +942,7 @@ export async function runAdminSerialize(argv: string[]): Promise<void> {
 
     console.log(
       formatSerializeDecode({
-        rpcUrl: config.rpcUrl,
+        rpcUrl: config.rpcDisplay,
         mint: config.mint,
         programId: config.programId,
         sources: config.source,
@@ -990,7 +1014,7 @@ export async function runAdminSerialize(argv: string[]): Promise<void> {
 
     console.log(
       formatBurnSerializeDecode({
-        rpcUrl: config.rpcUrl,
+        rpcUrl: config.rpcDisplay,
         mint: config.mint,
         programId: config.programId,
         sources: config.source,
@@ -1060,7 +1084,7 @@ export async function runAdminSerialize(argv: string[]): Promise<void> {
 
     console.log(
       formatUpdateFeeSerializeDecode({
-        rpcUrl: config.rpcUrl,
+        rpcUrl: config.rpcDisplay,
         mint: config.mint,
         programId: config.programId,
         sources: config.source,
@@ -1130,7 +1154,7 @@ export async function runAdminSerialize(argv: string[]): Promise<void> {
 
     console.log(
       formatRotateSignerSerializeDecode({
-        rpcUrl: config.rpcUrl,
+        rpcUrl: config.rpcDisplay,
         mint: config.mint,
         programId: config.programId,
         sources: config.source,
@@ -1154,6 +1178,7 @@ export async function runAdminSerialize(argv: string[]): Promise<void> {
           rotateArgs.role,
           rotateArgs.newPubkey,
           signer.address,
+          mintState.reserve,
         ),
         "rotate_signer",
       ),
@@ -1181,7 +1206,7 @@ export async function runAdminSerialize(argv: string[]): Promise<void> {
 
   console.log(
     formatResumeSerializeDecode({
-      rpcUrl: config.rpcUrl,
+      rpcUrl: config.rpcDisplay,
       mint: config.mint,
       programId: config.programId,
       sources: config.source,

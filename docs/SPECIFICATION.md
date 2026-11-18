@@ -49,7 +49,7 @@ These properties are settled at genesis. Each holds under the current Token-2022
 | Fee rate and maximum fee | 0 and 0 | Issuer and operator together | I-6, up to the ceilings; takes effect two epochs after it is set (section 7) |
 | Minimum fee record | 0 | Issuer and operator together | I-6; recorded, not enforced on chain (section 7) |
 | Issuance pause | Off | Set by any one co-signer; lifted by issuer and reserve together | I-4, I-5 (section 8) |
-| Issuer, operator and reserve keys | As given | Operator and reserve together | I-8 (section 3) |
+| Issuer, operator and reserve keys | As given | Operator and reserve together, with the new key's signature | I-8 (section 3) |
 | Reserve statement | Empty | Reserve | I-7 (section 9) |
 | Name, symbol and metadata link | As given | Token Metadata update authority | Token-2022 |
 | Where the metadata pointer points | The mint itself | Metadata Pointer authority | Token-2022 |
@@ -81,7 +81,7 @@ The values of the two fee ceilings; the keys that hold the issuer, operator and 
 
 The Metadata Pointer authority and the Token Metadata update authority are separate fields and may be separate keys: the first governs where the metadata is, the second what it says.
 
-For the issuer, operator and reserve, the program checks only that the stored key signed. An address that signs by cross-program call, such as a multisig program's vault, counts as a signer, so any of the three can be such an address. A Token-2022 multisig account cannot sign this program's instructions. Token-2022 accepts one for the withdraw-withheld, Confidential Transfer fee and Metadata Pointer authorities, but not for the Token Metadata update authority, which must sign itself. The command-line tool signs only with key files.
+For the issuer, operator and reserve, the program checks only that the stored key signed. An address that signs by cross-program call, such as a multisig program's vault, counts as a signer, so any of the three can be such an address. Where a role is held by such an address, whoever can change the program behind it can change when it signs; a currency names that program and who can change it in its own specification. A Token-2022 multisig account cannot sign this program's instructions. Token-2022 accepts one for the withdraw-withheld, Confidential Transfer fee and Metadata Pointer authorities, but not for the Token Metadata update authority, which must sign itself. The command-line tool signs only with key files. I-8 requires the signature of the key it installs (section 3.3), so an address that signs by cross-program call takes a role only through a transaction in which it signs, and the tool does not build that transaction.
 
 ### 3.2 Who signs each instruction
 
@@ -94,11 +94,11 @@ For the issuer, operator and reserve, the program checks only that the stored ke
 | I-5 `resume_issuance` | Issuer and reserve |
 | I-6 `update_transfer_fee` | Issuer and operator |
 | I-7 `publish_attestation` | Reserve alone |
-| I-8 `rotate_signer` | Operator and reserve |
+| I-8 `rotate_signer` | Operator, reserve and the new key |
 
 ### 3.3 Replacing a co-signer key
 
-Any of the three co-signer keys is replaced by I-8, signed by the operator and the reserve together, whichever key is replaced. The issuer cannot replace any key, its own included, and can itself be replaced without its signature. After a replacement the three keys must still be distinct. What each lost key stops is in LIMITS.md, section 12.
+Any of the three co-signer keys is replaced by I-8, signed by the operator and the reserve together, whichever key is replaced, and by the key being installed. A replacement cannot install a key that has not signed it. The issuer cannot replace any key, its own included, and can itself be replaced without its signature. After a replacement the three keys must still be distinct. A role's key can be replaced with its own current key; that key signs once. What each lost key stops is in LIMITS.md, section 12.
 
 ## 4. Instructions
 
@@ -273,8 +273,9 @@ Replaces one co-signer key.
 2. `PDA-1` (writable)
 3. `operator_authority` (signer)
 4. `reserve_authority` (signer)
+5. `new_authority` (signer): the key being installed, which must be the key given as `new_pubkey`
 
-**Checks, in order:** a signer does not match the stored operator or reserve (6001); the new key is the default key (6004); the role is above 2 (6005); the three keys would not be distinct after the replacement (6012).
+**Checks, in order:** a signer does not match the stored operator or reserve (6001); the new key is the default key (6004); the role is above 2 (6005); account 5 did not sign (`MissingRequiredSignature`) or is not the key given as `new_pubkey` (6001); the three keys would not be distinct after the replacement (6012). Replacing a role's key with its own current key is permitted; that key signs once.
 
 **Effects:** writes the new key into the role's slot in PDA-1. The replaced key is refused by every instruction afterward.
 
@@ -322,7 +323,7 @@ The enum is `DdcError`; each is returned as `ProgramError::Custom(code)`. Codes 
 | Code | Name | Returned by | When |
 |---|---|---|---|
 | 6000 | `MintPaused` | I-2 | Issuance is paused |
-| 6001 | `Unauthorized` | I-2 to I-8 | A signer does not match the stored key; or, in I-3, the source's owner is not PDA-5 |
+| 6001 | `Unauthorized` | I-2 to I-8 | A signer does not match the stored key; or, in I-3, the source's owner is not PDA-5; or, in I-8, account 5 is not the new key |
 | 6002 | `FeeBoundsInvalid` | I-6 | The minimum fee is above the maximum |
 | 6003 | `InvalidAttestationUri` | I-7 | The link is longer than 128 bytes |
 | 6004 | `InvalidPubkey` | I-1, I-8 | I-1: account 7 is the default key. I-8: the new key is the default key |
@@ -337,7 +338,7 @@ The enum is `DdcError`; each is returned as `ProgramError::Custom(code)`. Codes 
 
 ### 6.2 Structural checks
 
-Every instruction checks its accounts before its business rules and returns the runtime's built-in errors:
+Every instruction checks its accounts before its business rules and returns the runtime's built-in errors. The one exception is the signature of the key I-8 installs, which is checked at its place in that instruction's order (section 4):
 
 | Error | Failure |
 |---|---|
@@ -410,7 +411,7 @@ Whoever holds the program's upgrade authority can replace its code, and with it 
 
 The tool `ddc` reads every authority of a mint the program created and the public half of its withheld-fee decryption key, and builds every instruction except I-1. No command creates a mint; a genesis transaction is built to the layout in section 4. The reference genesis transaction is built by `scripts/devnet_i1v3_send.py` from the values in `scripts/devnet_i1v3_dry_construct.py`, among them the reference fee ceilings of 100 basis points and 1,000,000 base units. It takes the mint's and the payer's key files as arguments and refuses keys other than the reference mint's and payer's. It prints the instruction and a transaction signed over a placeholder blockhash the network refuses, and sends only with `--send`. It builds that one genesis; a currency builds its own genesis with its own values.
 
-**Holder commands:** `state`, `balance`, `setup-privacy`, `shield`, `unshield`, `apply-pending`, `confidential-transfer`, `public-transfer`. They are described in the README. `confidential-transfer`, `public-transfer` and `unshield` show what they will send and ask for a typed `CONFIRM`; `shield` and `apply-pending` show what they will send and send once their checks pass, without a prompt; `setup-privacy` asks for consent. The tool is version 0.2.0; the version is printed by `ddc` with no arguments.
+**Holder commands:** `state`, `balance`, `setup-privacy`, `shield`, `unshield`, `apply-pending`, `confidential-transfer`, `public-transfer`. They are described in the README. `confidential-transfer`, `public-transfer` and `unshield` show what they will send and ask for a typed `CONFIRM`; `shield` and `apply-pending` show what they will send and send once their checks pass, without a prompt; `setup-privacy` asks for consent. The tool is version 0.3.0; the version is printed by `ddc` with no arguments.
 
 **Administrative commands:**
 
@@ -422,6 +423,6 @@ The tool `ddc` reads every authority of a mint the program created and the publi
 | I-5 | `admin serialize resume`, then as above | Issuer | Reserve |
 | I-6 | `admin serialize update-fee`, then as above | Operator | Issuer |
 | I-7 | `admin publish-reserve-statement` | Reserve | — |
-| I-8 | `admin serialize rotate`, then as above | Operator | Reserve |
+| I-8 | `admin serialize rotate`, then `admin countersign --incoming`, then as above | Operator | The new key, then the reserve |
 
-Each two-signature instruction is prepared by one signer, passed to the second as a file in the `ddc-admin-tx-v1` format, checked and countersigned there, and submitted as separate steps. The transaction is signed against a durable nonce so that it does not expire in between: the issuer's nonce account for I-2, I-3 and I-5, the operator's for I-6 and I-8, both set in `cli/src/constants.ts`. `admin cancel issuer` or `admin cancel operator` advances that nonce, which invalidates a prepared transaction that has not been submitted. The second signer's check is made against the transaction itself, never against the description that accompanies it.
+Each two-signature instruction is prepared by one signer, passed to the second as a file in the `ddc-admin-tx-v1` format, checked and countersigned there, and submitted as separate steps. I-8 carries a third signature, that of the key being installed: after the operator prepares the file, the new key's holder signs it with `admin countersign --incoming`, and the reserve then countersigns. That step is skipped when the new key is the operator's or the reserve's current key, which signs in its own role. The transaction is signed against a durable nonce so that it does not expire in between: the issuer's nonce account for I-2, I-3 and I-5, the operator's for I-6 and I-8, both set in `cli/src/constants.ts`. `admin cancel issuer` or `admin cancel operator` advances that nonce, which invalidates a prepared transaction that has not been submitted. The second signer's check is made against the transaction itself, never against the description that accompanies it.

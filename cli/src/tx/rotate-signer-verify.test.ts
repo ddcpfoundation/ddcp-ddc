@@ -1,4 +1,6 @@
-// Offline rotate-signer verify tests (I-8). Fixtures are built the way
+// Offline rotate-signer verify tests (I-8). Since D-210 the replacement also
+// carries the incoming key's signature, given before the Reserve's: the
+// lifecycle below is Operator, then incoming key, then Reserve. Fixtures are built the way
 // update-fee-verify.test.ts builds them (generic durable-nonce assembly + a
 // throwaway countersign), but over the Operator->Reserve FRAME: I-8 is Operator-initiated
 // (fee-payer / nonce authority = Operator, over the Operator nonce account) and
@@ -43,8 +45,6 @@ const ISSUER_NONCE_ACCOUNT = address(
 );
 const SYSTEM_PROGRAM = address("11111111111111111111111111111111");
 const NONCE_VALUE = "EzQUSBM46pwYjy49fMVa7hVn2k3nBhbNUSmW1h9a4qeq";
-// Rotation target — a real, distinct devnet address (the payer).
-const NEW_SIGNER = address("FErEa5sWPZAPBet2HgHwvLZjrTnHzS7Ftd73YHGFGjLY");
 // "Wrong countersigner" stand-in: a real address distinct from the generated
 // Reserve signer — pins that the frame's Reserve countersigner is what's checked.
 // Also serves as the inert ctx.liveIssuer.
@@ -58,13 +58,12 @@ function wireOf(tx: Transaction): Uint8Array {
 }
 
 async function makeLifecycle(
-  params: { role: number; newPubkey: Address } = {
-    role: 0,
-    newPubkey: NEW_SIGNER,
-  },
+  params: { role: number; newPubkey?: Address } = { role: 0 },
 ) {
   const operator = await generateKeyPairSigner(); // initiator
   const reserve = await generateKeyPairSigner(); // countersigner
+  const incoming = await generateKeyPairSigner(); // the key installed (D-210)
+  const newPubkey = params.newPubkey ?? incoming.address;
   const { transaction } = await assembleDurableNonceTransaction(
     buildRotateSignerInstruction({
       mint: MINT,
@@ -72,7 +71,7 @@ async function makeLifecycle(
       operatorAuthority: operator.address,
       reserveAuthority: reserve.address,
       role: params.role,
-      newPubkey: params.newPubkey,
+      newPubkey,
     }),
     {
       nonceAccount: OPERATOR_NONCE_ACCOUNT,
@@ -82,11 +81,20 @@ async function makeLifecycle(
     operator,
   );
   const operatorOnlyWire = wireOf(transaction);
-  // applyReserveCountersignature is signer-agnostic (merges by pubkey); for I-8
-  // the countersigner genuinely IS the Reserve.
-  const countersigned = await applyReserveCountersignature(operatorOnlyWire, reserve);
+  // applyReserveCountersignature is signer-agnostic (merges by pubkey): the
+  // incoming key signs first, then the Reserve.
+  const incomingSigned = await applyReserveCountersignature(operatorOnlyWire, incoming);
+  const incomingSignedWire = wireOf(incomingSigned);
+  const countersigned = await applyReserveCountersignature(incomingSignedWire, reserve);
   const countersignedWire = wireOf(countersigned);
-  return { operator, reserve, operatorOnlyWire, countersignedWire };
+  return {
+    operator,
+    reserve,
+    incoming,
+    operatorOnlyWire,
+    incomingSignedWire,
+    countersignedWire,
+  };
 }
 
 function frameFor(operatorAddress: Address, reserveAddress: Address): SignerFrame {
@@ -117,21 +125,62 @@ function ctxFor(
   };
 }
 
-test("rotate-signer verify: a good Operator-initiated tx passes at countersign and extracts role + new_pubkey", async () => {
-  const { operator, reserve, operatorOnlyWire } = await makeLifecycle();
+test("rotate-signer verify: the incoming step passes on the Operator-signed tx and extracts role + new_pubkey", async () => {
+  const { operator, reserve, incoming, operatorOnlyWire } = await makeLifecycle();
   const verdict = verifyRotateSignerCountersign(
     decodeAdminTxWire(operatorOnlyWire),
+    ctxFor(reserve.address),
+    frameFor(operator.address, reserve.address),
+    "countersign",
+    true,
+  );
+  assert.equal(verdict.ok, true);
+  if (!verdict.ok) assert.fail("must pass");
+  assert.equal(verdict.role, 0);
+  assert.equal(verdict.newPubkey, incoming.address);
+});
+
+test("rotate-signer verify: the Reserve's countersign passes once the incoming key has signed", async () => {
+  const { operator, reserve, incoming, incomingSignedWire } = await makeLifecycle();
+  const verdict = verifyRotateSignerCountersign(
+    decodeAdminTxWire(incomingSignedWire),
     ctxFor(reserve.address),
     frameFor(operator.address, reserve.address),
   );
   assert.equal(verdict.ok, true);
   if (!verdict.ok) assert.fail("must pass");
-  assert.equal(verdict.role, 0);
-  assert.equal(verdict.newPubkey, NEW_SIGNER);
+  assert.equal(verdict.newPubkey, incoming.address);
 });
 
-test("rotate-signer verify: a countersigned tx passes at the submit stage with the same role + new_pubkey", async () => {
-  const { operator, reserve, countersignedWire } = await makeLifecycle();
+test("rotate-signer verify: the Reserve's countersign is refused while the incoming key has not signed, naming it and the --incoming step", async () => {
+  const { operator, reserve, incoming, operatorOnlyWire } = await makeLifecycle();
+  const verdict = verifyRotateSignerCountersign(
+    decodeAdminTxWire(operatorOnlyWire),
+    ctxFor(reserve.address),
+    frameFor(operator.address, reserve.address),
+  );
+  assert.equal(verdict.ok, false);
+  if (verdict.ok) assert.fail("must refuse");
+  assert.ok(verdict.reason.includes(`incoming key slot ${incoming.address} is not signed`));
+  assert.ok(verdict.reason.includes("admin countersign --incoming"));
+});
+
+test("rotate-signer verify: the incoming step is refused once the incoming key has already signed", async () => {
+  const { operator, reserve, incomingSignedWire } = await makeLifecycle();
+  const verdict = verifyRotateSignerCountersign(
+    decodeAdminTxWire(incomingSignedWire),
+    ctxFor(reserve.address),
+    frameFor(operator.address, reserve.address),
+    "countersign",
+    true,
+  );
+  assert.equal(verdict.ok, false);
+  if (verdict.ok) assert.fail("must refuse");
+  assert.match(verdict.reason, /incoming key slot .* is already signed/);
+});
+
+test("rotate-signer verify: a fully signed tx passes at the submit stage with the same role + new_pubkey", async () => {
+  const { operator, reserve, incoming, countersignedWire } = await makeLifecycle();
   const verdict = verifyRotateSignerCountersign(
     decodeAdminTxWire(countersignedWire),
     ctxFor(reserve.address),
@@ -141,13 +190,13 @@ test("rotate-signer verify: a countersigned tx passes at the submit stage with t
   assert.equal(verdict.ok, true);
   if (!verdict.ok) assert.fail("must pass");
   assert.equal(verdict.role, 0);
-  assert.equal(verdict.newPubkey, NEW_SIGNER);
+  assert.equal(verdict.newPubkey, incoming.address);
 });
 
 test("rotate-signer verify: STALE nonce — live nonce differs from the tx's — is refused as stale", async () => {
-  const { operator, reserve, operatorOnlyWire } = await makeLifecycle();
+  const { operator, reserve, incomingSignedWire } = await makeLifecycle();
   const verdict = verifyRotateSignerCountersign(
-    decodeAdminTxWire(operatorOnlyWire),
+    decodeAdminTxWire(incomingSignedWire),
     ctxFor(reserve.address, { liveNonceValue: STALE_NONCE }),
     frameFor(operator.address, reserve.address),
   );
@@ -157,12 +206,13 @@ test("rotate-signer verify: STALE nonce — live nonce differs from the tx's —
 });
 
 test("rotate-signer verify: a frame naming a countersigner other than the wire's Reserve is refused at the slot check (Reserve is required)", async () => {
-  const { operator, reserve, operatorOnlyWire } = await makeLifecycle();
-  // The wire carries operator + the generated Reserve; the frame names ISSUER as the
-  // countersigner — no signature slot exists for it. Pins that Reserve (the frame
-  // countersigner), not Issuer, is what I-8 requires.
+  const { operator, reserve, incomingSignedWire } = await makeLifecycle();
+  // The wire carries operator + the generated Reserve + the incoming key; the
+  // frame names ISSUER as the countersigner — no signature slot exists for
+  // it. Pins that Reserve (the frame countersigner), not Issuer, is what I-8
+  // requires.
   const verdict = verifyRotateSignerCountersign(
-    decodeAdminTxWire(operatorOnlyWire),
+    decodeAdminTxWire(incomingSignedWire),
     ctxFor(reserve.address),
     frameFor(operator.address, ISSUER),
   );
@@ -172,20 +222,52 @@ test("rotate-signer verify: a frame naming a countersigner other than the wire's
 });
 
 test("rotate-signer verify: an out-of-range role (5) is NOT judged — it surfaces in the extraction for the confirm gate", async () => {
-  const { operator, reserve, operatorOnlyWire } = await makeLifecycle({
+  const { operator, reserve, incoming, incomingSignedWire } = await makeLifecycle({
     role: 5,
-    newPubkey: NEW_SIGNER,
   });
   // Wire-fed confirm items are self-consistent by construction: the
-  // structural verify passes; the countersign --confirm-role gate and the
-  // on-chain InvalidRole (6005) check are what reject role > 2.
+  // structural verify passes; the countersign --confirm-target-role gate and
+  // the on-chain InvalidRole (6005) check are what reject role > 2.
   const verdict = verifyRotateSignerCountersign(
-    decodeAdminTxWire(operatorOnlyWire),
+    decodeAdminTxWire(incomingSignedWire),
     ctxFor(reserve.address),
     frameFor(operator.address, reserve.address),
   );
   assert.equal(verdict.ok, true);
   if (!verdict.ok) assert.fail("must pass structurally");
   assert.equal(verdict.role, 5);
-  assert.equal(verdict.newPubkey, NEW_SIGNER);
+  assert.equal(verdict.newPubkey, incoming.address);
+});
+
+test("rotate-signer verify: a replacement with the Reserve's own current key has two slots and passes the Reserve's countersign with no incoming step", async () => {
+  // Self-rotation: the new key is the Reserve, whose one signature covers
+  // both of its account positions.
+  const operator = await generateKeyPairSigner();
+  const reserve = await generateKeyPairSigner();
+  const { transaction } = await assembleDurableNonceTransaction(
+    buildRotateSignerInstruction({
+      mint: MINT,
+      mintState: MINT_STATE,
+      operatorAuthority: operator.address,
+      reserveAuthority: reserve.address,
+      role: 2,
+      newPubkey: reserve.address,
+    }),
+    {
+      nonceAccount: OPERATOR_NONCE_ACCOUNT,
+      nonceAuthority: operator.address,
+      nonceValue: NONCE_VALUE,
+    },
+    operator,
+  );
+  const decoded = decodeAdminTxWire(wireOf(transaction));
+  assert.equal(decoded.signatures.length, 2);
+  const verdict = verifyRotateSignerCountersign(
+    decoded,
+    ctxFor(reserve.address),
+    frameFor(operator.address, reserve.address),
+  );
+  assert.equal(verdict.ok, true);
+  if (!verdict.ok) assert.fail("must pass");
+  assert.equal(verdict.newPubkey, reserve.address);
 });

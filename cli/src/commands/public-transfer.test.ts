@@ -8,6 +8,7 @@
 // beside this file. The em dash is built by String.fromCharCode, as in the
 // module, so no test depends on the character surviving transport.
 import { test } from "node:test";
+import { DDC_DECIMALS } from "../amount.js";
 import assert from "node:assert/strict";
 import { address, generateKeyPairSigner, some, type Signature } from "@solana/kit";
 import {
@@ -182,10 +183,12 @@ test("public-transfer: the fee shown and the fee sent are ONE value, above the c
     const { message } = await assemblePublicTransferTransaction({
       signer,
       mint: DDC_MINT,
+      decimals: DDC_DECIMALS,
       recipient: RECIPIENT,
       grossBaseUnits: gross.grossBaseUnits,
       feeBaseUnits: gross.amounts.feeAmount,
       blockhash: TEST_BLOCKHASH,
+      createRecipientAccount: true,
     });
     const data = (message.instructions as unknown as Array<{ data?: Uint8Array }>)[1]?.data;
     assert.ok(data);

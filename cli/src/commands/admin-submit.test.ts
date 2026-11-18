@@ -238,7 +238,10 @@ test("rotate inspection block: target-role + name, new signer, CURRENT holder fr
     sha256Hex: sha,
   });
   assert.ok(out.includes("instruction    : rotate_signer"));
-  assert.ok(out.includes("Reserve countersigner slot signed"));
+  assert.ok(out.includes("Reserve countersigner and incoming key slots signed"));
+  assert.ok(
+    out.includes(`incoming key   : ${DESTINATION} (signed the transaction that installs it)`),
+  );
   assert.ok(
     out.includes(
       `will rotate    : target-role 0 (Issuer) -> new signer ${DESTINATION}`,
@@ -250,7 +253,11 @@ test("rotate inspection block: target-role + name, new signer, CURRENT holder fr
     ),
   );
   assert.ok(out.includes("IRREVERSIBLE"));
-  assert.ok(out.includes("recovery requires another Operator+Reserve rotate_signer"));
+  assert.ok(
+    out.includes(
+      "recovery requires another rotate_signer, signed by the Operator, the Reserve and the key it installs",
+    ),
+  );
   assert.ok(out.includes(`fee payer      : ${OPERATOR} (live operator)`));
   assert.ok(out.includes(`nonce value    : ${NONCE_VALUE}`));
   assert.ok(out.includes(`wire sha256    : ${sha}`));
