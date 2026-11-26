@@ -24,7 +24,7 @@ Whatever its source or justification, no change that introduces any of the follo
 - behavioral conditions that make access contingent on compliance with external criteria;
 - general-purpose programmable logic deployable by third parties at the protocol layer.
 
-A capability outside the conforming profile, such as a Freeze Authority, a Permanent Delegate or an auditor key, belongs in the fork of the issuer that needs it, never here. A change that touches an item on this list, or any of the [DDCP conformance criteria](https://github.com/ddcpfoundation/protocol-governance/blob/criteria-v20261008-2/CRITERIA.md), governs this repository and what is built from it afterward; it never applies to a currency already issued.
+A capability outside the conforming profile, such as a Freeze Authority, a Permanent Delegate or an auditor key, belongs in the fork of the issuer that needs it, never here. A change that touches an item on this list, or any of the [DDCP Evaluation Criteria](https://github.com/ddcpfoundation/protocol-governance/blob/criteria-v20261126-1/CRITERIA.md), governs this repository and what is built from it afterward; it never applies to a currency already issued.
 
 The rules for changing the protocol are in the protocol change policy, in the Foundation's governance repository: [PROTOCOL_CHANGE_POLICY.md](https://github.com/ddcpfoundation/protocol-governance/blob/main/PROTOCOL_CHANGE_POLICY.md).
 

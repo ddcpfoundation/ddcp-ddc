@@ -402,7 +402,7 @@ The set was predicted before the run. The check was run before the co-signer rol
    - That the program and Token-2022 accept those transactions on a cluster is shown only by devnet transactions.
 6. **The `state` command has no test of a successful read.** Its decoders are tested one by one (`mint-authorities`, `mint-state`, `mint-transfer-fee`, `program-upgrade-authority`, `reserve-statement`). Its failure paths are tested at the entry point (`network-failure`). A full successful read is checked by hand against devnet.
 7. **No test reaches a public cluster.** Network fees, rent, compute use and the behavior of public endpoints are measured on devnet, outside the suites.
-8. **Wallet compatibility and proof time on mobile devices** are measurements, not tests, and are not part of this report. The desk check of wallet compatibility is recorded in `LIMITS.md`, section 15.
+8. **Wallet compatibility and proof time on mobile devices** are measurements, not tests, and are not part of this report. The desk check of wallet compatibility is recorded in `LIMITS.md`, section 5.
 9. **Static analysis** (`cargo audit`, `npm audit`, `cargo clippy` with arithmetic and slicing lints, a Solana static analyzer) is a separate check and is not part of this report.
 10. **`solana-lints` was not run.**
    - Its seven lints (crytic/solana-lints) are pinned to the Rust toolchain `nightly-2025-01-09`. Five crates the program itself is built from declare a minimum Rust version of 1.89 (`solana-address`, `solana-hash`, `solana-instruction-error`, `solana-pubkey`, `solana-system-interface`), later than that toolchain, so the lints cannot compile the program as built.

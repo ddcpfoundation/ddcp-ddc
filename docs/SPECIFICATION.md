@@ -1,8 +1,8 @@
 # Specification of the reference program
 
-This document specifies the program in `program/` and the mints it creates: how a mint is configured, the roles and authorities, every instruction with its accounts, arguments, checks and effects, the program's records and errors, and the documents a mint links to. Its last section maps the command-line tool in `cli/` to the instructions.
+This document specifies the program in `program/` and the mints it creates: how a mint is configured, the roles and authorities, every instruction with its accounts, arguments, checks and effects, the program's records and errors, and the documents a mint links to. Section 14 maps the command-line tool in `cli/` to the instructions, and section 15 states the security assumptions the code relies on.
 
-It describes the code, not the protocol. DDCP's commitments are in the [Manifesto](https://github.com/ddcpfoundation/protocol-governance/blob/main/MANIFESTO.md), and the criteria a currency is examined against are in [CRITERIA.md](https://github.com/ddcpfoundation/protocol-governance/blob/criteria-v20261008-2/CRITERIA.md). Where this code falls short of those criteria is in [LIMITS.md](../LIMITS.md). Who holds each authority is a fact about each deployment: the Foundation's devnet demonstration is described in the [README](../README.md#the-deployed-reference-instance), and a currency built using this code states its own holders in its own specification.
+It describes the code, not the protocol. DDCP's commitments are in the [Manifesto](https://github.com/ddcpfoundation/protocol-governance/blob/main/MANIFESTO.md), and the criteria a currency is examined against are in [CRITERIA.md](https://github.com/ddcpfoundation/protocol-governance/blob/criteria-v20261126-1/CRITERIA.md). Where this code falls short of those criteria is in [LIMITS.md](../LIMITS.md). Who holds each authority is a fact about each deployment: the Foundation's devnet demonstration is described in the [README](../README.md#the-deployed-reference-instance), and a currency built using this code states its own holders in its own specification.
 
 ## 1. Conventions
 
@@ -22,7 +22,7 @@ The program creates every mint it governs, in its genesis instruction (I-1). Any
 
 ### 2.1 Fixed by the genesis for every mint
 
-These properties are settled at genesis. Each holds under the current Token-2022 code and under the deployed program's upgrade arrangement (see LIMITS.md, sections 1 and 14).
+These properties are settled at genesis. Each holds under the current Token-2022 code and under the deployed program's upgrade arrangement (see LIMITS.md, sections 2 and 14).
 
 - **Token program.** The mint is a Token-2022 mint.
 - **Extensions.** Exactly five, initialized in this order:
@@ -98,7 +98,7 @@ For the issuer, operator and reserve, the program checks only that the stored ke
 
 ### 3.3 Replacing a co-signer key
 
-Any of the three co-signer keys is replaced by I-8, signed by the operator and the reserve together, whichever key is replaced, and by the key being installed. A replacement cannot install a key that has not signed it. The issuer cannot replace any key, its own included, and can itself be replaced without its signature. After a replacement the three keys must still be distinct. A role's key can be replaced with its own current key; that key signs once. What each lost key stops is in LIMITS.md, section 12.
+Any of the three co-signer keys is replaced by I-8, signed by the operator and the reserve together, whichever key is replaced, and by the key being installed. A replacement cannot install a key that has not signed it. The issuer cannot replace any key, its own included, and can itself be replaced without its signature. After a replacement the three keys must still be distinct. A role's key can be replaced with its own current key; that key signs once. What each lost key stops is in LIMITS.md, section 8.
 
 ## 4. Instructions
 
@@ -359,7 +359,7 @@ Errors raised by Token-2022 in a call the program makes reach the caller unchang
 - **Minimum fee.** I-6 records a minimum fee in PDA-1, refusing one above the maximum, but nothing on chain enforces it on transfers: Token-2022's fee has no floor. It is a parameter of record for client software. The command-line tool applies it: `confidential-transfer` and `public-transfer` refuse a transfer whose fee would be below it. Other software need not.
 - **Withheld fees.** Fees are withheld in recipients' token accounts. The fee of a confidential transfer is encrypted under the withheld-fee decryption key and the recipient's key. The withdraw-withheld authority withdraws withheld fees, public and confidential; a confidential withdrawal also needs a proof made with the withheld-fee decryption key's secret. The Confidential Transfer fee authority only switches on or off whether confidential withheld fees can be collected into the mint; while collection is on, anyone can move them there, and they are withdrawn from the mint by the withdraw-withheld authority. These are Token-2022 instructions; the program has none, and the command-line tool has no command for them.
 - **Confidential transfers.** Because the mint carries the Transfer Fee extension, Token-2022 accepts only its transfer-with-fee form of confidential transfer on it, at any rate including zero. The sender proves the fee with the transfer.
-- **Visibility.** Whoever holds the withheld-fee decryption key can narrow the amount of a confidential transfer from its fee when the rate is above zero; the extent is in LIMITS.md, section 4.
+- **Visibility.** Whoever holds the withheld-fee decryption key can narrow the amount of a confidential transfer from its fee when the rate is above zero; the extent is in LIMITS.md, section 5.
 
 ## 8. Issuance pause
 
@@ -401,7 +401,7 @@ The confidential operations are Token-2022's:
 - **confidential transfer** sends from the available confidential balance in one transaction carrying five proofs, built on the sender's machine; the transaction is 3,247 bytes on the wire and needs the network's version-1 transaction format, so the tool first reads whether the cluster has activated it and refuses to send where it has not;
 - **unshield** moves an amount from the available confidential balance to the public balance.
 
-The limits of what this conceals are in LIMITS.md, sections 4 to 6.
+The limits of what this conceals are in LIMITS.md, sections 5 and 6.
 
 ## 13. Program upgrade
 
@@ -426,3 +426,38 @@ The tool `ddc` reads every authority of a mint the program created and the publi
 | I-8 | `admin serialize rotate`, then `admin countersign --incoming`, then as above | Operator | The new key, then the reserve |
 
 Each two-signature instruction is prepared by one signer, passed to the second as a file in the `ddc-admin-tx-v1` format, checked and countersigned there, and submitted as separate steps. I-8 carries a third signature, that of the key being installed: after the operator prepares the file, the new key's holder signs it with `admin countersign --incoming`, and the reserve then countersigns. That step is skipped when the new key is the operator's or the reserve's current key, which signs in its own role. The transaction is signed against a durable nonce so that it does not expire in between: the issuer's nonce account for I-2, I-3 and I-5, the operator's for I-6 and I-8, both set in `cli/src/constants.ts`. `admin cancel issuer` or `admin cancel operator` advances that nonce, which invalidates a prepared transaction that has not been submitted. The second signer's check is made against the transaction itself, never against the description that accompanies it.
+
+## 15. Security assumptions
+
+What the code relies on to work as this document describes, and what holders are exposed to if an assumption fails. Each statement holds for this code; a currency built from it states its own.
+
+### 15.1 Cryptographic assumptions
+
+- **Signatures.** Every holder's token account, and every authority in section 3.1 other than the withheld-fee decryption key, is controlled by one or more Ed25519 keys, or by an address with no private key that only a program can sign for, which is then as secure as that program and the keys it checks. For Ed25519 keys, control rests on the hardness of the discrete logarithm problem on Curve25519.
+- **Confidential Balances.** Balances and amounts are encrypted with twisted ElGamal over the Ristretto group of Curve25519, and transfers carry zero-knowledge proofs, verified on chain by the ZK ElGamal Proof program, that they are well formed. Confidentiality and the soundness of the proofs rest on the hardness of the discrete logarithm and related problems in that group. The balance figure a holder reads is also kept under a symmetric key with authenticated encryption.
+- **Key derivation.** A holder's two confidential keys are derived from one Ed25519 signature with HKDF-SHA512 (section 12). Whoever holds the wallet key can derive them.
+- **Hashes.** SHA-256 identifies instructions and records (section 1) and pins the reserve statement's document (section 9).
+
+### 15.2 A quantum computer
+
+A quantum computer large enough to solve the discrete logarithm problem on Curve25519 would break the first three assumptions. None of the public-key cryptography in this code is designed to resist one, and the code has no way to move a mint or its holders to a scheme that is; that would depend on the chain and on Token-2022.
+
+- **Control.** Whoever could derive a private key from its public key could sign for any token account or authority whose public key is on chain, and move or mint value as that key could.
+- **Privacy.** Encrypted balances and amounts already recorded on chain could be decrypted. Because the confidential keys are derived from the wallet key, a derived wallet key also yields them. History recorded before any later change would stay exposed: no change made afterward can conceal it again.
+
+No date is claimed for such a computer.
+
+### 15.3 Programs and libraries the code depends on
+
+The code relies on Token-2022 and on the ZK ElGamal Proof program behaving as specified, and on the client libraries that build proofs (section 12). Who can change those programs, and their history of flaws and disablement, is in LIMITS.md, section 2.
+
+### 15.4 Audit status
+
+The code has not had an independent security audit. It is checked with automated static-analysis tools and with adversarial tests written separately from the implementation; neither is an audit (LIMITS.md, section 13). When an audit is published, this section names its report and the commit it covers.
+
+### 15.5 If an assumption fails
+
+- A holder's wallet key exposed, by any means: that holder's value can be moved and their confidential balances and history read.
+- A co-signer key exposed: whatever that role can do alone or together with the keys it signs with (section 3.2).
+- The proof program accepting a forged proof: value in confidential balances could be taken without its owner's key. The flaws reported in 2025 were of this kind (Solana Foundation post-mortems of 2025-05-02 and 2025-06-25; LIMITS.md, section 2).
+- The encryption broken: every encrypted balance and amount ever recorded becomes readable.

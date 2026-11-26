@@ -165,7 +165,7 @@ Report a vulnerability privately, never in a public issue. See [SECURITY.md](SEC
 
 ## Trademark
 
-DDCP is a trademark of DDCP Foundation Inc (U.S. application pending). The license covers the code, not the mark. A currency built from this repository may state its provenance as "Built as a fork of the DDCP reference implementation"; a currency built without this code may state "Based on the DDCP protocol". Any implication of endorsement by the Foundation, or of conformance to the protocol, is permitted only as recorded in the Foundation's [conformance evaluations](https://github.com/ddcpfoundation/conformance-evaluations). The trademark usage policy is in the Foundation's governance repository: [TRADEMARK_USAGE_POLICY.md](https://github.com/ddcpfoundation/protocol-governance/blob/main/TRADEMARK_USAGE_POLICY.md).
+DDCP is a trademark of DDCP Foundation Inc (U.S. application pending). The license covers the code, not the mark. A currency built from this repository may state its provenance as "Built as a fork of the DDCP reference implementation"; a currency built without this code may state "Based on the DDCP protocol". Any implication of endorsement by the Foundation, or of conformance to the protocol, is permitted only as recorded in the Foundation's [DDCP Evaluations](https://github.com/ddcpfoundation/conformance-evaluations). The trademark usage policy is in the Foundation's governance repository: [TRADEMARK_USAGE_POLICY.md](https://github.com/ddcpfoundation/protocol-governance/blob/main/TRADEMARK_USAGE_POLICY.md).
 
 The DDCP reference implementation is published at https://github.com/ddcpfoundation/ddcp-ddc. <!-- rename-currency: keep -->
 
